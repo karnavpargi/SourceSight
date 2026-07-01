@@ -1,3 +1,5 @@
+import app.database.supabase_auth  # noqa: F401 — registers auth.users for FK metadata
+
 from app.database.base import Base, EMBEDDING_DIMENSIONS
 from app.database.chat_message import ChatMessage
 from app.database.chat_thread import ChatThread

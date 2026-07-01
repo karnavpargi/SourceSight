@@ -29,6 +29,12 @@ packages = ["app"]
 add-bounds = "exact"
 exclude-newer = "7 days"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that require live external services",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel==7.3.0",

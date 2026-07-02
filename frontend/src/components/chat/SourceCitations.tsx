@@ -73,6 +73,7 @@ export function SourceCitations({ citations, passages }: SourceCitationsProps) {
                         href={passage.source_url}
                         target="_blank"
                         rel="noopener noreferrer"
+                        aria-label={`Open ${passage.ticker} filing in a new tab`}
                         className="text-primary inline-flex items-center gap-1 hover:underline"
                       >
                         Open filing

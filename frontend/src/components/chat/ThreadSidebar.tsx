@@ -1,11 +1,11 @@
 import { Loader2, LogOut, MessageSquarePlus, Sparkles } from 'lucide-react'
 
 import type { ThreadSummary } from '@/lib/api'
-
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
 
-interface ThreadSidebarProps {
+export interface ThreadSidebarContentProps {
   threads: ThreadSummary[]
   activeThreadId: string | null
   loading: boolean
@@ -25,7 +25,7 @@ function formatThreadDate(value: string): string {
   }).format(new Date(value))
 }
 
-export function ThreadSidebar({
+export function ThreadSidebarContent({
   threads,
   activeThreadId,
   loading,
@@ -34,9 +34,9 @@ export function ThreadSidebar({
   onSelectThread,
   onCreateThread,
   onSignOut,
-}: ThreadSidebarProps) {
+}: ThreadSidebarContentProps) {
   return (
-    <aside className="border-sidebar-border bg-sidebar text-sidebar-foreground flex w-72 shrink-0 flex-col border-r backdrop-blur-xl">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="border-sidebar-border flex items-center justify-between border-b p-4">
         <div className="flex items-center gap-3">
           <div className="bg-primary/15 text-primary flex size-9 items-center justify-center rounded-lg">
@@ -119,10 +119,30 @@ export function ThreadSidebar({
       </div>
 
       {error && (
-        <p className="text-destructive border-sidebar-border border-t p-4 text-sm" role="alert">
+        <p
+          className="text-destructive border-sidebar-border border-t p-4 text-sm"
+          role="alert"
+        >
           {error}
         </p>
       )}
+    </div>
+  )
+}
+
+interface ThreadSidebarProps extends ThreadSidebarContentProps {
+  className?: string
+}
+
+export function ThreadSidebar({ className, ...props }: ThreadSidebarProps) {
+  return (
+    <aside
+      className={cn(
+        'border-sidebar-border bg-sidebar text-sidebar-foreground flex w-72 shrink-0 flex-col border-r backdrop-blur-xl',
+        className,
+      )}
+    >
+      <ThreadSidebarContent {...props} />
     </aside>
   )
 }

@@ -1,8 +1,11 @@
 import type { UIMessage } from 'ai'
 import { Bot, Loader2, UserRound } from 'lucide-react'
 
+import { MarkdownContent } from '@/components/chat/MarkdownContent'
 import { SourceCitations } from '@/components/chat/SourceCitations'
+import { StarterPrompts } from '@/components/chat/StarterPrompts'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useStickToBottom } from '@/hooks/useStickToBottom'
 import {
   dedupeMessagesById,
   messageCitations,
@@ -16,13 +19,24 @@ interface MessageListProps {
   messages: UIMessage[]
   loading: boolean
   streaming: boolean
+  onSelectPrompt?: (prompt: string) => void
+  promptsDisabled?: boolean
 }
 
 export function MessageList({
   messages,
   loading,
   streaming,
+  onSelectPrompt,
+  promptsDisabled = false,
 }: MessageListProps) {
+  const visibleMessages = dedupeMessagesById(messages)
+  const lastMessage = visibleMessages[visibleMessages.length - 1]
+  const lastMessageText = lastMessage ? messageText(lastMessage) : ''
+  const scrollKey = `${visibleMessages.length}:${lastMessageText.length}:${streaming}`
+
+  const { containerRef, handleScroll } = useStickToBottom(scrollKey)
+
   if (loading) {
     return (
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 p-6">
@@ -35,30 +49,42 @@ export function MessageList({
 
   if (messages.length === 0) {
     return (
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-        <div className="glass-panel rounded-2xl p-4">
-          <Bot className="text-primary mx-auto size-8" strokeWidth={1.75} />
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-6 p-6 text-center">
+        <div className="space-y-4">
+          <div className="glass-panel rounded-2xl p-4">
+            <Bot className="text-primary mx-auto size-8" strokeWidth={1.75} />
+          </div>
+          <div className="space-y-2">
+            <p className="font-heading text-xl font-semibold tracking-tight">
+              Start your analysis
+            </p>
+            <p className="text-muted-foreground max-w-md text-sm leading-relaxed">
+              Ask about revenue, risk factors, or segment performance. Answers
+              stream here with source citations.
+            </p>
+          </div>
         </div>
-        <div className="space-y-2">
-          <p className="font-heading text-xl font-semibold tracking-tight">
-            Start your analysis
-          </p>
-          <p className="text-muted-foreground max-w-md text-sm leading-relaxed">
-            Ask about revenue, risk factors, or segment performance. Answers
-            stream here with source citations.
-          </p>
-        </div>
+
+        {onSelectPrompt && (
+          <StarterPrompts
+            className="w-full max-w-md"
+            disabled={promptsDisabled}
+            onSelect={onSelectPrompt}
+          />
+        )}
       </div>
     )
   }
 
-  const visibleMessages = dedupeMessagesById(messages)
-  const lastMessage = visibleMessages[visibleMessages.length - 1]
   const showStreamingPlaceholder =
     streaming && (!lastMessage || lastMessage.role === 'user')
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto p-6">
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto p-6"
+    >
       {visibleMessages.map((message) => {
         const isUser = message.role === 'user'
         const text = messageText(message)
@@ -104,7 +130,11 @@ export function MessageList({
                   <span>{progress?.label}</span>
                 </div>
               ) : text.length > 0 ? (
-                <p className="whitespace-pre-wrap">{text}</p>
+                isUser ? (
+                  <p className="whitespace-pre-wrap">{text}</p>
+                ) : (
+                  <MarkdownContent content={text} />
+                )
               ) : isActiveAssistantMessage ? (
                 <div className="text-muted-foreground flex items-center gap-2">
                   <Loader2 className="size-4 shrink-0 animate-spin" strokeWidth={2} />

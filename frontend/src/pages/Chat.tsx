@@ -1,24 +1,24 @@
 import type { UIMessage } from 'ai'
-import { MessageSquarePlus, Sparkles } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { Menu, MessageSquarePlus, Sparkles } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ChatPanel } from '@/components/chat/ChatPanel'
-import { ThreadSidebar } from '@/components/chat/ThreadSidebar'
+import { StarterPrompts } from '@/components/chat/StarterPrompts'
+import {
+  ThreadSidebar,
+  ThreadSidebarContent,
+} from '@/components/chat/ThreadSidebar'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, type ThreadSummary } from '@/lib/api'
-import { DEFAULT_THREAD_TITLE } from '@/lib/chat-threads'
 import { useAuth } from '@/lib/auth'
 import { toUIMessage } from '@/lib/chat'
+import { stashPendingPrompt } from '@/lib/chat-prompts'
+import { DEFAULT_THREAD_TITLE } from '@/lib/chat-threads'
 import { ApiError, isNetworkError } from '@/lib/http'
-
-const STARTER_PROMPTS = [
-  'What was AWS operating income last quarter?',
-  'Summarize Apple risk factors from the latest 10-K',
-  'Compare NVDA and AMD revenue growth trends',
-] as const
 
 function formatError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -44,10 +44,16 @@ export function Chat() {
   const [threadsLoading, setThreadsLoading] = useState(true)
   const [threadsError, setThreadsError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const [initialMessages, setInitialMessages] = useState<UIMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(Boolean(threadId))
   const [messagesError, setMessagesError] = useState<string | null>(null)
+
+  const activeThread = useMemo(
+    () => threads.find((thread) => thread.id === threadId) ?? null,
+    [threadId, threads],
+  )
 
   const loadThreads = useCallback(async () => {
     setThreadsLoading(true)
@@ -90,19 +96,16 @@ export function Chat() {
 
   useEffect(() => {
     if (!threadId) {
-      setInitialMessages([])
-      setMessagesLoading(false)
-      setMessagesError(null)
       return
     }
-
-    setMessagesLoading(true)
-    setInitialMessages([])
-    setMessagesError(null)
 
     let active = true
 
     void (async () => {
+      setMessagesLoading(true)
+      setInitialMessages([])
+      setMessagesError(null)
+
       try {
         const messages = await api.listThreadMessages(threadId)
         if (active) {
@@ -124,14 +127,18 @@ export function Chat() {
     }
   }, [threadId])
 
-  async function handleCreateThread() {
+  async function handleCreateThread(options?: { initialPrompt?: string }) {
     setCreating(true)
 
     try {
       const thread = await api.createThread({ title: DEFAULT_THREAD_TITLE })
+      if (options?.initialPrompt) {
+        stashPendingPrompt(thread.id, options.initialPrompt)
+      }
       setMessagesLoading(true)
       await loadThreads()
       navigate(`/chat/${thread.id}`)
+      setSidebarOpen(false)
       toast.success('Thread created')
     } catch (error) {
       toast.error(formatError(error))
@@ -140,65 +147,87 @@ export function Chat() {
     }
   }
 
+  function handleSelectThread(id: string) {
+    setMessagesLoading(true)
+    setSidebarOpen(false)
+    navigate(`/chat/${id}`)
+  }
+
+  const sidebarProps = {
+    threads,
+    activeThreadId: threadId ?? null,
+    loading: threadsLoading,
+    creating,
+    error: threadsError,
+    onSelectThread: handleSelectThread,
+    onCreateThread: () => void handleCreateThread(),
+    onSignOut: async () => {
+      await signOut()
+      navigate('/sign-in', { replace: true })
+    },
+  }
+
   return (
     <div className="flex h-svh overflow-hidden">
-      <ThreadSidebar
-        threads={threads}
-        activeThreadId={threadId ?? null}
-        loading={threadsLoading}
-        creating={creating}
-        error={threadsError}
-        onSelectThread={(id) => {
-          setMessagesLoading(true)
-          navigate(`/chat/${id}`)
-        }}
-        onCreateThread={() => void handleCreateThread()}
-        onSignOut={async () => {
-          await signOut()
-          navigate('/sign-in', { replace: true })
-        }}
-      />
+      <ThreadSidebar {...sidebarProps} className="hidden md:flex" />
+
+      <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+        <SheetContent
+          side="left"
+          className="border-sidebar-border bg-sidebar text-sidebar-foreground w-72 max-w-[85vw] gap-0 p-0 sm:max-w-sm"
+        >
+          <ThreadSidebarContent {...sidebarProps} />
+        </SheetContent>
+      </Sheet>
 
       <main className="flex min-w-0 flex-1 flex-col">
         {!threadId ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
-            <div className="glass-panel max-w-lg rounded-3xl p-8 text-center">
-              <div className="bg-primary/15 text-primary mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl">
-                <Sparkles className="size-6" strokeWidth={1.75} />
-              </div>
-              <h1 className="font-heading text-2xl font-semibold tracking-tight">
-                Select or create an analysis
-              </h1>
-              <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
-                Your filing conversations live in the sidebar. Start a new thread
-                to query indexed 10-K and 10-Q documents with cited answers.
-              </p>
+          <>
+            <div className="border-border/60 glass-panel flex items-center gap-3 border-b px-4 py-3 md:hidden">
               <Button
-                className="bg-cta text-cta-foreground hover:bg-cta/90 mt-6 cursor-pointer transition-colors duration-200"
-                onClick={() => void handleCreateThread()}
-                disabled={creating}
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0 cursor-pointer"
+                aria-label="Open threads"
+                onClick={() => setSidebarOpen(true)}
               >
-                <MessageSquarePlus className="size-4" strokeWidth={2} />
-                New analysis
+                <Menu className="size-5" strokeWidth={2} />
               </Button>
+              <p className="font-heading truncate text-sm font-semibold tracking-tight">
+                SourceSight
+              </p>
             </div>
 
-            <div className="max-w-lg space-y-3">
-              <p className="text-muted-foreground text-center text-xs font-medium tracking-wide uppercase">
-                Example prompts
-              </p>
-              <ul className="space-y-2">
-                {STARTER_PROMPTS.map((prompt) => (
-                  <li
-                    key={prompt}
-                    className="glass-panel text-muted-foreground cursor-default rounded-xl px-4 py-3 text-sm"
-                  >
-                    {prompt}
-                  </li>
-                ))}
-              </ul>
+            <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
+              <div className="glass-panel max-w-lg rounded-3xl p-8 text-center">
+                <div className="bg-primary/15 text-primary mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl">
+                  <Sparkles className="size-6" strokeWidth={1.75} />
+                </div>
+                <h1 className="font-heading text-2xl font-semibold tracking-tight">
+                  Select or create an analysis
+                </h1>
+                <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
+                  Your filing conversations live in the sidebar. Start a new thread
+                  to query indexed 10-K and 10-Q documents with cited answers.
+                </p>
+                <Button
+                  className="bg-cta text-cta-foreground hover:bg-cta/90 mt-6 cursor-pointer transition-colors duration-200"
+                  onClick={() => void handleCreateThread()}
+                  disabled={creating}
+                >
+                  <MessageSquarePlus className="size-4" strokeWidth={2} />
+                  New analysis
+                </Button>
+              </div>
+
+              <StarterPrompts
+                className="max-w-lg"
+                disabled={creating}
+                onSelect={(prompt) => void handleCreateThread({ initialPrompt: prompt })}
+              />
             </div>
-          </div>
+          </>
         ) : messagesLoading ? (
           <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 p-6">
             <Skeleton className="h-24 w-2/3 rounded-2xl" />
@@ -215,7 +244,9 @@ export function Chat() {
           <ChatPanel
             key={threadId}
             threadId={threadId}
+            threadTitle={activeThread?.title ?? 'Analysis'}
             initialMessages={initialMessages}
+            onOpenSidebar={() => setSidebarOpen(true)}
             onThreadsChange={loadThreads}
           />
         )}

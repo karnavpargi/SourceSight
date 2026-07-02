@@ -56,6 +56,73 @@ def test_chunk_indexes_are_sequential() -> None:
     assert [chunk.chunk_index for chunk in chunks] == list(range(len(chunks)))
 
 
+def test_chunk_skips_empty_section_body() -> None:
+    markdown = "## Item 1. Business\n\n   \n## Item 1A. Risk Factors\n\nActual content."
+    chunks = chunk_markdown(markdown)
+    assert len(chunks) == 1
+    assert chunks[0].section == "Item 1A. Risk Factors"
+
+
+def test_chunk_splits_oversized_paragraph_with_overlap() -> None:
+    long_sentence = "Risk sentence with detail. " * 400
+    markdown = f"## Item 1A. Risk Factors\n\n{long_sentence}"
+    chunks = chunk_markdown(markdown, target_tokens=100, overlap_tokens=20)
+    assert len(chunks) >= 2
+
+
+def test_chunk_tail_overlap_uses_full_text_when_short() -> None:
+    markdown = "## Item 1. Business\n\n" + ("word " * 30)
+    chunks = chunk_markdown(markdown, target_tokens=10, overlap_tokens=50)
+    assert chunks
+
+
+def test_chunk_flushes_pending_parts_before_long_paragraph() -> None:
+    prefix = "Short intro. "
+    long_paragraph = "Sentence. " * 500
+    markdown = f"## Item 1A. Risk Factors\n\n{prefix}\n\n{long_paragraph}"
+    chunks = chunk_markdown(markdown, target_tokens=80, overlap_tokens=10)
+    assert len(chunks) >= 2
+    assert "Short intro." in chunks[0].content
+
+
+def test_estimate_tokens_minimum_one() -> None:
+    assert estimate_tokens("") == 1
+
+
+def test_chunk_section_with_no_paragraphs_returns_empty() -> None:
+    from ingest.chunk import _chunk_section
+
+    body = ("   \n\n" * 300)
+    chunks = _chunk_section(body, section="Item 1. Business", target_tokens=10, overlap_tokens=2)
+    assert chunks == []
+
+
+def test_chunk_split_long_paragraph_skips_blank_sentences() -> None:
+    from unittest.mock import patch
+
+    from ingest.chunk import _split_long_paragraph
+
+    with patch("ingest.chunk.re.split", return_value=["", "Actual sentence here."]):
+        pieces = _split_long_paragraph("ignored", target_tokens=5)
+    assert pieces == ["Actual sentence here."]
+
+
+def test_chunk_tail_overlap_without_paragraph_break() -> None:
+    from ingest.chunk import _tail_for_overlap
+
+    text = "z" * 300
+    tail = _tail_for_overlap(text, overlap_tokens=10)
+    assert tail == text[-40:]
+
+
+def test_chunk_tail_overlap_uses_paragraph_break() -> None:
+    from ingest.chunk import _tail_for_overlap
+
+    text = ("x" * 120) + "\n\n" + ("y" * 10)
+    tail = _tail_for_overlap(text, overlap_tokens=20)
+    assert tail.startswith("y")
+
+
 def _shared_suffix_prefix(left: str, right: str) -> str:
     max_length = min(len(left), len(right))
     for size in range(max_length, 0, -1):

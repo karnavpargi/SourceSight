@@ -36,9 +36,18 @@ markers = [
     "integration: tests that require live external services",
 ]
 
+[tool.coverage.run]
+branch = true
+source = ["ingest"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+
 [dependency-groups]
 dev = [
     "ipykernel==7.3.0",
     "pytest==9.1.1",
+    "pytest-cov==7.1.0",
     "ruff==0.15.19",
 ]

@@ -1,9 +1,16 @@
 import type { UIMessage } from 'ai'
-import { Bot, UserRound } from 'lucide-react'
+import { Bot, Loader2, UserRound } from 'lucide-react'
 
 import { SourceCitations } from '@/components/chat/SourceCitations'
 import { Skeleton } from '@/components/ui/skeleton'
-import { messageCitations, messageSourcePassages, messageText } from '@/lib/chat'
+import {
+  dedupeMessagesById,
+  messageCitations,
+  messageProgress,
+  messageSourcePassages,
+  messageText,
+  shouldShowMessageProgress,
+} from '@/lib/chat'
 
 interface MessageListProps {
   messages: UIMessage[]
@@ -45,14 +52,26 @@ export function MessageList({
     )
   }
 
+  const visibleMessages = dedupeMessagesById(messages)
+  const lastMessage = visibleMessages[visibleMessages.length - 1]
+  const showStreamingPlaceholder =
+    streaming && (!lastMessage || lastMessage.role === 'user')
+
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto p-6">
-      {messages.map((message) => {
+      {visibleMessages.map((message) => {
         const isUser = message.role === 'user'
         const text = messageText(message)
+        const progress = messageProgress(message)
         const citations = messageCitations(message)
         const passages = messageSourcePassages(message)
         const Icon = isUser ? UserRound : Bot
+        const isActiveAssistantMessage =
+          !isUser && streaming && message.id === lastMessage?.id
+        const showProgress = shouldShowMessageProgress(message, {
+          streaming,
+          isActiveAssistantMessage,
+        })
 
         return (
           <div
@@ -79,8 +98,20 @@ export function MessageList({
               <p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
                 {isUser ? 'You' : 'SourceSight'}
               </p>
-              <p className="whitespace-pre-wrap">{text}</p>
-              {!isUser && (
+              {showProgress ? (
+                <div className="text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="size-4 shrink-0 animate-spin" strokeWidth={2} />
+                  <span>{progress?.label}</span>
+                </div>
+              ) : text.length > 0 ? (
+                <p className="whitespace-pre-wrap">{text}</p>
+              ) : isActiveAssistantMessage ? (
+                <div className="text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="size-4 shrink-0 animate-spin" strokeWidth={2} />
+                  <span>Preparing answer…</span>
+                </div>
+              ) : null}
+              {!isUser && !showProgress && (
                 <SourceCitations citations={citations} passages={passages} />
               )}
             </div>
@@ -88,13 +119,16 @@ export function MessageList({
         )
       })}
 
-      {streaming && (
+      {showStreamingPlaceholder && (
         <div className="flex gap-3">
           <div className="bg-brand-purple/15 text-brand-purple flex size-8 shrink-0 items-center justify-center rounded-lg">
             <Bot className="size-4" strokeWidth={2} />
           </div>
           <div className="glass-panel rounded-2xl px-4 py-3">
-            <Skeleton className="h-4 w-48" />
+            <div className="text-muted-foreground flex items-center gap-2">
+              <Loader2 className="size-4 shrink-0 animate-spin" strokeWidth={2} />
+              <span>Connecting...</span>
+            </div>
           </div>
         </div>
       )}

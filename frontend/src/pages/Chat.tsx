@@ -9,6 +9,7 @@ import { ThreadSidebar } from '@/components/chat/ThreadSidebar'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, type ThreadSummary } from '@/lib/api'
+import { DEFAULT_THREAD_TITLE } from '@/lib/chat-threads'
 import { useAuth } from '@/lib/auth'
 import { toUIMessage } from '@/lib/chat'
 import { ApiError, isNetworkError } from '@/lib/http'
@@ -89,8 +90,15 @@ export function Chat() {
 
   useEffect(() => {
     if (!threadId) {
+      setInitialMessages([])
+      setMessagesLoading(false)
+      setMessagesError(null)
       return
     }
+
+    setMessagesLoading(true)
+    setInitialMessages([])
+    setMessagesError(null)
 
     let active = true
 
@@ -99,12 +107,10 @@ export function Chat() {
         const messages = await api.listThreadMessages(threadId)
         if (active) {
           setInitialMessages(messages.map(toUIMessage))
-          setMessagesError(null)
         }
       } catch (error) {
         if (active) {
           setMessagesError(formatError(error))
-          setInitialMessages([])
         }
       } finally {
         if (active) {
@@ -122,7 +128,7 @@ export function Chat() {
     setCreating(true)
 
     try {
-      const thread = await api.createThread({ title: 'New analysis' })
+      const thread = await api.createThread({ title: DEFAULT_THREAD_TITLE })
       setMessagesLoading(true)
       await loadThreads()
       navigate(`/chat/${thread.id}`)
@@ -210,6 +216,7 @@ export function Chat() {
             key={threadId}
             threadId={threadId}
             initialMessages={initialMessages}
+            onThreadsChange={loadThreads}
           />
         )}
       </main>

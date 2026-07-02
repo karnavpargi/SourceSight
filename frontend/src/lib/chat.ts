@@ -27,17 +27,28 @@ export interface SourcePassageData {
   is_neighbor: boolean
 }
 
+export interface ProgressData {
+  label: string
+  phase: 'running' | 'complete'
+}
+
 export type SourceSightUIMessage = UIMessage<
   unknown,
   {
     citation: CitationData
     'source-passage': SourcePassageData
+    progress: ProgressData
   }
 >
 
 export function toUIMessage(message: MessageSummary): SourceSightUIMessage {
   if (message.message_data) {
-    return message.message_data as unknown as SourceSightUIMessage
+    return {
+      ...(message.message_data as unknown as SourceSightUIMessage),
+      // Persisted rows each have a unique DB id; client ids in message_data can repeat
+      // when a stream request is retried after the user message was already saved.
+      id: message.id,
+    }
   }
 
   return {
@@ -47,11 +58,58 @@ export function toUIMessage(message: MessageSummary): SourceSightUIMessage {
   }
 }
 
+export function dedupeMessagesById<T extends { id: string }>(messages: T[]): T[] {
+  const lastIndexById = new Map<string, number>()
+  messages.forEach((message, index) => {
+    lastIndexById.set(message.id, index)
+  })
+
+  return messages.filter((message, index) => lastIndexById.get(message.id) === index)
+}
+
 export function messageText(message: UIMessage): string {
   return message.parts
     .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
     .map((part) => part.text)
     .join('')
+}
+
+export function messageProgress(message: UIMessage): ProgressData | null {
+  let latest: ProgressData | null = null
+
+  for (const part of message.parts) {
+    if (part.type !== 'data-progress') {
+      continue
+    }
+    if (!isProgressData(part.data)) {
+      continue
+    }
+    latest = part.data
+  }
+
+  return latest
+}
+
+export function shouldShowMessageProgress(
+  message: UIMessage,
+  {
+    streaming,
+    isActiveAssistantMessage,
+  }: {
+    streaming: boolean
+    isActiveAssistantMessage: boolean
+  },
+): boolean {
+  if (!isActiveAssistantMessage || !streaming || message.role !== 'assistant') {
+    return false
+  }
+
+  const progress = messageProgress(message)
+  if (progress === null || progress.phase !== 'running') {
+    return false
+  }
+
+  return messageText(message).length === 0
 }
 
 export function messageCitations(message: UIMessage): CitationData[] {
@@ -84,6 +142,18 @@ export function messageSourcePassages(message: UIMessage): SourcePassageData[] {
   }
 
   return passages
+}
+
+function isProgressData(value: unknown): value is ProgressData {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const record = value as Record<string, unknown>
+  return (
+    typeof record.label === 'string' &&
+    (record.phase === 'running' || record.phase === 'complete')
+  )
 }
 
 function isCitationData(value: unknown): value is CitationData {

@@ -21,6 +21,24 @@ export interface CreateThreadRequest {
   title: string
 }
 
+export interface ChatModelOption {
+  id: string
+  label: string
+}
+
+export interface ChatProviderCatalog {
+  id: 'local' | 'google' | 'opencode'
+  label: string
+  default_model: string
+  models: ChatModelOption[]
+}
+
+export interface ChatProvidersResponse {
+  default_provider: 'local' | 'google' | 'opencode'
+  default_model: string
+  providers: ChatProviderCatalog[]
+}
+
 async function getAccessToken(): Promise<string | null> {
   const { data } = await supabase.auth.getSession()
   return data.session?.access_token ?? null
@@ -59,6 +77,8 @@ export const api = {
 
   listThreadMessages: (threadId: string) =>
     api.get<MessageSummary[]>(`/threads/${threadId}/messages`),
+
+  listChatProviders: () => api.get<ChatProvidersResponse>('/chat/providers'),
 
   getAccessToken,
 }

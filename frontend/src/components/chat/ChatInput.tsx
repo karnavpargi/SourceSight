@@ -1,4 +1,5 @@
 import { Loader2, SendHorizontal } from 'lucide-react'
+import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,6 +9,7 @@ interface ChatInputProps {
   disabled: boolean
   onChange: (value: string) => void
   onSubmit: () => void
+  leadingSlot?: ReactNode
 }
 
 export function ChatInput({
@@ -15,18 +17,20 @@ export function ChatInput({
   disabled,
   onChange,
   onSubmit,
+  leadingSlot,
 }: ChatInputProps) {
   const canSubmit = !disabled && value.trim().length > 0
 
   return (
     <div className="border-border/60 bg-background/80 border-t p-4 backdrop-blur-xl">
       <form
-        className="mx-auto flex w-full max-w-3xl gap-2"
+        className="mx-auto flex w-full max-w-3xl items-end gap-2"
         onSubmit={(event) => {
           event.preventDefault()
           onSubmit()
         }}
       >
+        {leadingSlot}
         <Input
           value={value}
           disabled={disabled}

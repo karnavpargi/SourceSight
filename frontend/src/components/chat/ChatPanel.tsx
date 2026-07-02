@@ -1,20 +1,45 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, type UIMessage } from 'ai'
 import { AlertCircle } from 'lucide-react'
 
 import { ChatInput } from '@/components/chat/ChatInput'
+import { ChatSettingsMenu } from '@/components/chat/ChatSettingsMenu'
 import { MessageList } from '@/components/chat/MessageList'
 import { env } from '@/lib/env'
 import { api } from '@/lib/api'
+import {
+  DEFAULT_CHAT_GENERATION,
+  type ChatGenerationSettings,
+} from '@/lib/chat-generation'
+import type { ChatModelSelection } from '@/lib/chat-models'
 
 interface ChatPanelProps {
   threadId: string
   initialMessages: UIMessage[]
+  onThreadsChange?: () => void
 }
 
-export function ChatPanel({ threadId, initialMessages }: ChatPanelProps) {
+export function ChatPanel({
+  threadId,
+  initialMessages,
+  onThreadsChange,
+}: ChatPanelProps) {
   const [input, setInput] = useState('')
+  const [modelSelection, setModelSelection] = useState<ChatModelSelection | null>(
+    null,
+  )
+  const [generationSettings, setGenerationSettings] =
+    useState<ChatGenerationSettings>(DEFAULT_CHAT_GENERATION)
+  const modelSelectionRef = useRef<ChatModelSelection | null>(null)
+  modelSelectionRef.current = modelSelection
+  const generationSettingsRef = useRef<ChatGenerationSettings>(DEFAULT_CHAT_GENERATION)
+  generationSettingsRef.current = generationSettings
+  const refreshedSidebarTitle = useRef(initialMessages.length > 0)
+
+  const handleModelChange = useCallback((selection: ChatModelSelection) => {
+    setModelSelection(selection)
+  }, [])
 
   const transport = useMemo(
     () =>
@@ -28,7 +53,34 @@ export function ChatPanel({ threadId, initialMessages }: ChatPanelProps) {
           }
           return headers
         },
-        body: { threadId },
+        prepareSendMessagesRequest: ({
+          body,
+          id,
+          messages,
+          trigger,
+          messageId,
+        }) => {
+          const selection = modelSelectionRef.current
+          const generation = generationSettingsRef.current
+          if (!selection) {
+            throw new Error('Select a provider and model before sending.')
+          }
+
+          return {
+            body: {
+              ...body,
+              threadId,
+              provider: selection.provider,
+              model: selection.model,
+              temperature: generation.temperature,
+              maxOutputTokens: generation.maxOutputTokens,
+              id,
+              messages,
+              trigger,
+              messageId,
+            },
+          }
+        },
       }),
     [threadId],
   )
@@ -40,6 +92,20 @@ export function ChatPanel({ threadId, initialMessages }: ChatPanelProps) {
   })
 
   const streaming = status === 'streaming' || status === 'submitted'
+  const canSend = Boolean(modelSelection) && !streaming
+
+  useEffect(() => {
+    if (refreshedSidebarTitle.current || !onThreadsChange) {
+      return
+    }
+
+    if (status !== 'submitted' && status !== 'streaming') {
+      return
+    }
+
+    refreshedSidebarTitle.current = true
+    onThreadsChange()
+  }, [onThreadsChange, status])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -70,11 +136,20 @@ export function ChatPanel({ threadId, initialMessages }: ChatPanelProps) {
 
       <ChatInput
         value={input}
-        disabled={streaming}
+        disabled={!canSend}
         onChange={setInput}
+        leadingSlot={
+          <ChatSettingsMenu
+            modelSelection={modelSelection}
+            generationSettings={generationSettings}
+            onModelChange={handleModelChange}
+            onGenerationChange={setGenerationSettings}
+            disabled={streaming}
+          />
+        }
         onSubmit={() => {
           const text = input.trim()
-          if (!text || streaming) {
+          if (!text || !canSend) {
             return
           }
           sendMessage({ text })

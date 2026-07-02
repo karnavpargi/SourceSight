@@ -9,6 +9,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { env } from '@/lib/env'
 import { supabase } from '@/lib/supabase'
 
 const TRUST_POINTS = [
@@ -30,7 +31,7 @@ const TRUST_POINTS = [
 ] as const
 
 export function SignIn() {
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(env.devSignInEmail ?? '')
   const [submitting, setSubmitting] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)

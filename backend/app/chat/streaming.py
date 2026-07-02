@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator
 
 from fastapi.responses import StreamingResponse
 
+from app.assistant.outputs import GroundedAnswer
+
 UI_MESSAGE_STREAM_VERSION = "v1"
 UI_MESSAGE_STREAM_HEADER = "x-vercel-ai-ui-message-stream"
 
@@ -39,8 +41,26 @@ async def stream_ui_message_text(text: str) -> AsyncIterator[str]:
 
 
 def ui_message_stream_response(text: str = STUB_ASSISTANT_REPLY) -> StreamingResponse:
+    return _stream_response(stream_ui_message_text(text))
+
+
+def stream_refusal(text: str) -> StreamingResponse:
+    """Stream a controlled refusal as plain assistant text (no citations)."""
+    return _stream_response(stream_ui_message_text(text))
+
+
+def stream_grounded_answer(answer: GroundedAnswer) -> StreamingResponse:
+    """Stream a grounded answer's text.
+
+    Citation and source-passage parts are emitted by a later task; for now this
+    streams the answer prose so the turn completes end-to-end.
+    """
+    return _stream_response(stream_ui_message_text(answer.answer))
+
+
+def _stream_response(stream: AsyncIterator[str]) -> StreamingResponse:
     return StreamingResponse(
-        stream_ui_message_text(text),
+        stream,
         media_type="text/event-stream",
         headers={
             UI_MESSAGE_STREAM_HEADER: UI_MESSAGE_STREAM_VERSION,

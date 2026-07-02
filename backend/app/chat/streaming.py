@@ -10,6 +10,11 @@ from collections.abc import AsyncIterator
 from fastapi.responses import StreamingResponse
 
 from app.assistant.outputs import GroundedAnswer
+from app.chat.messages import (
+    ChatUIMessage,
+    TextPart,
+    grounded_answer_to_ui_message,
+)
 
 UI_MESSAGE_STREAM_VERSION = "v1"
 UI_MESSAGE_STREAM_HEADER = "x-vercel-ai-ui-message-stream"
@@ -26,9 +31,29 @@ def format_ui_message_sse_event(payload: dict) -> str:
 async def stream_ui_message_text(text: str) -> AsyncIterator[str]:
     """Emit a minimal AI SDK UI message stream for plain assistant text."""
     message_id = f"msg_{uuid.uuid4().hex}"
-    text_id = f"text_{uuid.uuid4().hex}"
+    ui_message = ChatUIMessage(id=message_id, role="assistant", parts=[TextPart(text=text)])
+    async for event in stream_ui_message(ui_message):
+        yield event
 
-    yield format_ui_message_sse_event({"type": "start", "messageId": message_id})
+
+async def stream_ui_message(message: ChatUIMessage) -> AsyncIterator[str]:
+    """Emit an AI SDK UI message stream for a complete assistant message."""
+    yield format_ui_message_sse_event({"type": "start", "messageId": message.id})
+
+    for part in message.parts:
+        if isinstance(part, TextPart):
+            async for event in _stream_text_part(part.text):
+                yield event
+            continue
+
+        yield format_ui_message_sse_event(part.model_dump(mode="json", exclude_none=True))
+
+    yield format_ui_message_sse_event({"type": "finish"})
+    yield "data: [DONE]\n\n"
+
+
+async def _stream_text_part(text: str) -> AsyncIterator[str]:
+    text_id = f"text_{uuid.uuid4().hex}"
     yield format_ui_message_sse_event({"type": "text-start", "id": text_id})
 
     for chunk in _chunk_text(text):
@@ -36,8 +61,6 @@ async def stream_ui_message_text(text: str) -> AsyncIterator[str]:
         await asyncio.sleep(0)
 
     yield format_ui_message_sse_event({"type": "text-end", "id": text_id})
-    yield format_ui_message_sse_event({"type": "finish"})
-    yield "data: [DONE]\n\n"
 
 
 def ui_message_stream_response(text: str = STUB_ASSISTANT_REPLY) -> StreamingResponse:
@@ -50,12 +73,10 @@ def stream_refusal(text: str) -> StreamingResponse:
 
 
 def stream_grounded_answer(answer: GroundedAnswer) -> StreamingResponse:
-    """Stream a grounded answer's text.
-
-    Citation and source-passage parts are emitted by a later task; for now this
-    streams the answer prose so the turn completes end-to-end.
-    """
-    return _stream_response(stream_ui_message_text(answer.answer))
+    """Stream a grounded answer with text, citation, and source-passage parts."""
+    message_id = f"msg_{uuid.uuid4().hex}"
+    ui_message = grounded_answer_to_ui_message(answer, message_id=message_id)
+    return _stream_response(stream_ui_message(ui_message))
 
 
 def _stream_response(stream: AsyncIterator[str]) -> StreamingResponse:

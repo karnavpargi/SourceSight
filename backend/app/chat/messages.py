@@ -18,16 +18,22 @@ class TextPart(BaseModel):
     text: str
 
 
-class CitationPart(BaseModel):
-    type: Literal["citation"] = "citation"
+class CitationData(BaseModel):
     citation_index: int = Field(ge=1)
     chunk_id: UUID
     excerpt: str
 
 
+class CitationPart(BaseModel):
+    type: Literal["data-citation"] = "data-citation"
+    data: CitationData
+    id: str | None = None
+
+
 class SourcePassagePart(BaseModel):
-    type: Literal["source-passage"] = "source-passage"
-    passage: SourcePassage
+    type: Literal["data-source-passage"] = "data-source-passage"
+    data: SourcePassage
+    id: str | None = None
 
 
 ChatUIPart = Annotated[
@@ -62,7 +68,7 @@ def parse_ui_messages(data: list[dict]) -> list[ChatUIMessage]:
 
 def ui_message_to_wire(message: ChatUIMessage) -> dict:
     """Serialize an internal UI message back to AI SDK wire JSON."""
-    return message.model_dump(mode="json")
+    return message.model_dump(mode="json", exclude_none=True)
 
 
 def message_text(message: ChatUIMessage) -> str:
@@ -74,7 +80,7 @@ def grounded_answer_to_ui_message(answer: GroundedAnswer, *, message_id: str) ->
     """Build a persisted/streamed assistant UI message from a grounded answer."""
     parts: list[ChatUIPart] = [TextPart(text=answer.answer)]
     parts.extend(_citation_to_part(citation) for citation in answer.citations)
-    parts.extend(SourcePassagePart(passage=passage) for passage in answer.cited_passages)
+    parts.extend(SourcePassagePart(data=passage) for passage in answer.cited_passages)
     return ChatUIMessage(id=message_id, role="assistant", parts=parts)
 
 
@@ -111,18 +117,20 @@ def _parse_part(data: dict) -> ChatUIPart:
     part_type = data.get("type")
     if part_type == "text":
         return TextPart.model_validate(data)
-    if part_type == "citation":
+    if part_type == "data-citation":
         return CitationPart.model_validate(data)
-    if part_type == "source-passage":
+    if part_type == "data-source-passage":
         return SourcePassagePart.model_validate(data)
     raise ValueError(f"Unsupported message part type: {part_type!r}")
 
 
 def _citation_to_part(citation: Citation) -> CitationPart:
     return CitationPart(
-        citation_index=citation.citation_index,
-        chunk_id=citation.chunk_id,
-        excerpt=citation.excerpt,
+        data=CitationData(
+            citation_index=citation.citation_index,
+            chunk_id=citation.chunk_id,
+            excerpt=citation.excerpt,
+        )
     )
 
 

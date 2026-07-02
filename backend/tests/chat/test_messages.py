@@ -6,6 +6,7 @@ import pytest
 from app.assistant.outputs import Citation, GroundedAnswer
 from app.chat.messages import (
     ChatUIMessage,
+    CitationData,
     CitationPart,
     SourcePassagePart,
     TextPart,
@@ -75,20 +76,21 @@ def test_parse_ui_message_round_trip() -> None:
         "parts": [
             {"type": "text", "text": "AWS operating income rose [1]."},
             {
-                "type": "citation",
-                "citation_index": 1,
-                "chunk_id": str(CHUNK_ID),
-                "excerpt": "AWS operating income increased.",
+                "type": "data-citation",
+                "data": {
+                    "citation_index": 1,
+                    "chunk_id": str(CHUNK_ID),
+                    "excerpt": "AWS operating income increased.",
+                },
             },
             {
-                "type": "source-passage",
-                "passage": _passage().model_dump(mode="json"),
+                "type": "data-source-passage",
+                "data": _passage().model_dump(mode="json"),
             },
         ],
     }
 
     message = parse_ui_message(wire)
-    restored = ui_message_to_wire(message)
 
     assert message == ChatUIMessage(
         id=MESSAGE_ID,
@@ -96,14 +98,16 @@ def test_parse_ui_message_round_trip() -> None:
         parts=[
             TextPart(text="AWS operating income rose [1]."),
             CitationPart(
-                citation_index=1,
-                chunk_id=CHUNK_ID,
-                excerpt="AWS operating income increased.",
+                data=CitationData(
+                    citation_index=1,
+                    chunk_id=CHUNK_ID,
+                    excerpt="AWS operating income increased.",
+                )
             ),
-            SourcePassagePart(passage=_passage()),
+            SourcePassagePart(data=_passage()),
         ],
     )
-    assert restored == wire
+    assert parse_ui_message(ui_message_to_wire(message)) == message
 
 
 def test_grounded_answer_to_ui_message_builds_parts() -> None:

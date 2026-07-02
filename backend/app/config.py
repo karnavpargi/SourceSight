@@ -21,10 +21,15 @@ class Settings(BaseSettings):
     # Postgres (Alembic + direct DB access)
     database_url: str
 
-    # OpenAI (LLM + embeddings)
+    # OpenAI (LLM + embeddings when provider=openai)
     openai_api_key: str
     openai_embedding_model: str = "text-embedding-3-small"
-    openai_embedding_dimensions: int = 1536
+
+    # Embeddings (provider-agnostic)
+    embedding_provider: str = "ollama"
+    embedding_dimensions: int = 768
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embedding_model: str = "nomic-embed-text"
 
     # Server
     allowed_origins: Annotated[list[str], NoDecode]

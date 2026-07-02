@@ -1,71 +1,41 @@
-"""Batch OpenAI embeddings for ingestion."""
+"""Embedding dispatcher — routes to the configured provider."""
 
 from __future__ import annotations
 
-import time
-
-from openai import APIStatusError, OpenAI, RateLimitError
+from collections.abc import Callable
 
 from app.config import settings
+from ingest.providers.ollama import embed_texts_ollama
+from ingest.providers.openai import embed_texts_openai
 
-DEFAULT_BATCH_SIZE = 100
-MAX_RETRIES = 5
-INITIAL_BACKOFF_SECONDS = 1.0
+ProviderFn = Callable[[list[str]], list[list[float]]]
+
+_PROVIDERS: dict[str, ProviderFn] = {
+    "openai": lambda texts: embed_texts_openai(texts),
+    "ollama": lambda texts: embed_texts_ollama(texts),
+}
 
 
-def embed_texts(
-    texts: list[str],
-    *,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    client: OpenAI | None = None,
-) -> list[list[float]]:
-    """Embed texts in batches, retrying transient OpenAI failures."""
-    if not texts:
-        return []
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed texts using the provider selected in settings."""
+    provider = settings.embedding_provider.lower()
+    embed_fn = _PROVIDERS.get(provider)
+    if embed_fn is None:
+        supported = ", ".join(sorted(_PROVIDERS))
+        raise ValueError(f"Unsupported EMBEDDING_PROVIDER={provider!r}. Supported: {supported}")
 
-    openai_client = client or OpenAI(api_key=settings.openai_api_key)
-    embeddings: list[list[float]] = []
-
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
-        embeddings.extend(_embed_batch_with_retry(openai_client, batch))
-
+    embeddings = embed_fn(texts)
+    _validate_dimensions(embeddings, provider)
     return embeddings
 
 
-def _embed_batch_with_retry(client: OpenAI, texts: list[str]) -> list[list[float]]:
-    backoff = INITIAL_BACKOFF_SECONDS
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = client.embeddings.create(
-                model=settings.openai_embedding_model,
-                input=texts,
-                dimensions=settings.openai_embedding_dimensions,
-            )
-            return [item.embedding for item in response.data]
-        except (RateLimitError, APIStatusError) as exc:
-            if not _is_retryable(exc) or attempt == MAX_RETRIES - 1:
-                raise
-            time.sleep(backoff)
-            backoff *= 2
-
-    raise RuntimeError("embedding retry loop exited unexpectedly")
-
-
-def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, RateLimitError):
-        body = getattr(exc, "body", None)
-        if isinstance(body, dict):
-            error = body.get("error", {})
-            if error.get("code") == "insufficient_quota":
-                return False
-        return True
-    if isinstance(exc, APIStatusError):
-        if exc.status_code == 429:
-            body = exc.body if isinstance(exc.body, dict) else {}
-            error = body.get("error", {})
-            if error.get("code") == "insufficient_quota":
-                return False
-        return exc.status_code == 429 or exc.status_code >= 500
-    return False
+def _validate_dimensions(embeddings: list[list[float]], provider: str) -> None:
+    if not embeddings:
+        return
+    actual = len(embeddings[0])
+    expected = settings.embedding_dimensions
+    if actual != expected:
+        raise ValueError(
+            f"{provider} returned {actual}-dim vectors but EMBEDDING_DIMENSIONS={expected}. "
+            "Update the model or migration to match."
+        )

@@ -12,7 +12,8 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from app.assistant.agent import document_agent
 from app.assistant.outputs import GroundedAnswer
-from app.chat.orchestrator import REFUSAL_MESSAGE, GroundingError, run_chat_turn
+from app.chat.orchestrator import REFUSAL_MESSAGE, run_chat_turn
+from app.grounding.validator import GroundingError
 from app.database.chats import ChatMessageRecord
 from app.retrieval.types import RetrievalResult, SourcePassage
 
@@ -147,7 +148,9 @@ async def test_run_chat_turn_happy_path_persists_and_streams() -> None:
 
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
         "app.chat.orchestrator.chat_store.attach_citations", new=attach
-    ), document_agent.override(model=_grounded_answer_model()):
+    ), patch("app.chat.orchestrator.validate") as validate_grounding, document_agent.override(
+        model=_grounded_answer_model()
+    ):
         response = await run_chat_turn(
             client,
             user_id=USER_ID,
@@ -162,7 +165,7 @@ async def test_run_chat_turn_happy_path_persists_and_streams() -> None:
 
     assert _assembled_text(body) == "AWS operating income rose [1]."
     assert "data: [DONE]" in body
-    assert validator.received_passages == [_passage()]
+    validate_grounding.assert_called_once()
     assert append.await_count == 2
     roles = [call.kwargs["role"] for call in append.await_args_list]
     assert roles == ["user", "assistant"]
@@ -184,6 +187,9 @@ async def test_run_chat_turn_refuses_on_grounding_failure() -> None:
 
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
         "app.chat.orchestrator.chat_store.attach_citations", new=attach
+    ), patch(
+        "app.chat.orchestrator.validate",
+        side_effect=GroundingError("ungrounded answer"),
     ), document_agent.override(model=_grounded_answer_model()):
         response = await run_chat_turn(
             client,

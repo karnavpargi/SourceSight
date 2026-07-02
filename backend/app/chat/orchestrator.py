@@ -21,15 +21,12 @@ from app.assistant.outputs import GroundedAnswer
 from app.chat.streaming import stream_grounded_answer, stream_refusal
 from app.database import chats as chat_store
 from app.database.chats import AttachCitationInput
+from app.grounding.validator import GroundingError, validate
 from app.retrieval.types import RetrievalResult, SourcePassage
 
 REFUSAL_MESSAGE = "This corpus doesn't contain enough evidence to answer that."
 
 __all__ = ["REFUSAL_MESSAGE", "GroundingError", "run_chat_turn"]
-
-
-class GroundingError(Exception):
-    """Raised by a grounding validator when an answer fails policy checks."""
 
 
 @dataclass
@@ -105,7 +102,7 @@ async def run_chat_turn(
     answer = run.output
 
     try:
-        grounding_validator.validate(answer, recording_retriever.retrieved_passages)
+        validate(answer, recording_retriever.retrieved_passages)
     except GroundingError:
         await chat_store.append_message(
             client,

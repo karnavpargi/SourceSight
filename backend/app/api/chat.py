@@ -12,9 +12,12 @@ from supabase import AsyncClient
 from app.auth.dependencies import get_current_user, get_user_client
 from app.auth.types import CurrentUser
 from app.chat.messages import extract_latest_user_text
-from app.chat.streaming import STUB_ASSISTANT_REPLY, ui_message_stream_response
+from app.chat.orchestrator import run_chat_turn
 from app.database import chats as chat_store
 from app.database.chats import ChatForbiddenError, ChatNotFoundError
+from app.database.session import session_scope
+from app.grounding.validator import grounding_validator
+from app.retrieval.document_retriever import SessionDocumentRetriever
 
 router = APIRouter(tags=["chat"])
 
@@ -120,19 +123,14 @@ async def stream_chat(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    await chat_store.append_message(
-        client,
-        user_id=user.id,
-        thread_id=body.thread_id,
-        role="user",
-        content=user_text,
-        message_data=body.messages[-1] if body.messages else None,
-    )
-    await chat_store.append_message(
-        client,
-        user_id=user.id,
-        thread_id=body.thread_id,
-        role="assistant",
-        content=STUB_ASSISTANT_REPLY,
-    )
-    return ui_message_stream_response()
+    with session_scope() as session:
+        retriever = SessionDocumentRetriever(session)
+        return await run_chat_turn(
+            client,
+            user_id=user.id,
+            thread_id=body.thread_id,
+            user_text=user_text,
+            user_message_data=body.messages[-1] if body.messages else None,
+            retriever=retriever,
+            grounding_validator=grounding_validator,
+        )

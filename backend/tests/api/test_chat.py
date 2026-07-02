@@ -159,20 +159,22 @@ def test_stream_chat_requires_authentication(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_stream_chat_streams_stub_response_and_persists_messages(
+def test_stream_chat_delegates_to_orchestrator(
     client: TestClient,
     thread_record: ChatThreadRecord,
 ) -> None:
     mock_supabase = MagicMock()
     mock_supabase.auth.get_user = AsyncMock(return_value=_mock_user_response())
+    mock_response = MagicMock(status_code=200)
+    mock_response.headers = {"content-type": "text/event-stream"}
 
     with patch("app.auth.dependencies.create_user_client", new=AsyncMock(return_value=mock_supabase)), patch(
         "app.api.chat.chat_store.get_thread",
         new=AsyncMock(return_value=thread_record),
     ), patch(
-        "app.api.chat.chat_store.append_message",
-        new=AsyncMock(),
-    ) as append_message:
+        "app.api.chat.run_chat_turn",
+        new=AsyncMock(return_value=mock_response),
+    ) as run_chat_turn:
         response = client.post(
             "/chat/stream",
             headers=_auth_headers(),
@@ -189,12 +191,8 @@ def test_stream_chat_streams_stub_response_and_persists_messages(
         )
 
     assert response.status_code == 200
-    assert response.headers["x-vercel-ai-ui-message-stream"] == "v1"
-    assert "text/event-stream" in response.headers["content-type"]
-    body = response.text
-    assert '"type":"text-delta"' in body.replace(" ", "")
-    assert "SourceSight stub" in body
-    assert append_message.await_count == 2
+    run_chat_turn.assert_awaited_once()
+    assert run_chat_turn.await_args.kwargs["user_text"] == "AWS operating income"
 
 
 def test_user_a_cannot_access_user_b_thread_messages(client: TestClient) -> None:

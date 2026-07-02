@@ -10,9 +10,8 @@ session inside the background agent task so streaming stays concurrent-safe.
 from __future__ import annotations
 
 import asyncio
-import queue
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -25,15 +24,18 @@ from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from app.assistant.agent import build_document_agent_model, document_agent
 from app.assistant.deps import DocumentAgentDeps, DocumentRetriever, GroundingValidator
 from app.assistant.outputs import GroundedAnswer
+from app.chat.activity_summary import group_activity_steps, merge_activity_log
+from app.chat.agent_events import agent_event_stream_handler
 from app.chat.generation import (
     ChatGenerationConfig,
-    build_length_instruction,
     build_model_settings,
-    limit_grounded_answer,
 )
 from app.chat.models_catalog import ResolvedChatModel
+from app.chat.messages import TurnActivityData
 from app.chat.persistence import assistant_answer_to_wire
+from app.chat.turn_activity import TurnActivityEmitter
 from app.chat.streaming import (
+    format_activity_event,
     format_progress_event,
     format_ui_message_sse_event,
     stream_events,
@@ -44,8 +46,11 @@ from app.config import ChatProvider
 from app.chat.thread_titles import DEFAULT_THREAD_TITLE, derive_thread_title
 from app.database import chats as chat_store
 from app.database.chats import AttachCitationInput
+from app.database.session import session_scope
 from app.grounding.validator import GroundingError, validate
+from app.retrieval.chunk_lookup import chunk_not_found_retry
 from app.retrieval.document_retriever import SessionPerCallDocumentRetriever
+from app.retrieval.retriever import _load_neighbor_passages
 from app.retrieval.types import RetrievalResult, SourcePassage
 
 REFUSAL_MESSAGE = "This corpus doesn't contain enough evidence to answer that."
@@ -107,25 +112,30 @@ class _RecordingRetriever:
     """Wraps a retriever to record every passage returned during the turn."""
 
     inner: DocumentRetriever
-    emit_progress: Callable[[str], None] | None = None
+    activity: TurnActivityEmitter | None = None
     seen: dict[UUID, SourcePassage] = field(default_factory=dict)
 
     def search_filings(self, query: str, *, limit: int = 10) -> RetrievalResult:
-        if self.emit_progress is not None:
-            self.emit_progress("Searching indexed filings...")
+        self._update("Searching indexed filings...", detail=query)
         result = self.inner.search_filings(query, limit=limit)
         self._record(result.passages)
-        if self.emit_progress is not None:
-            self.emit_progress("Analyzing retrieved passages...")
+        hit_count = len(result.passages)
+        detail = f"{hit_count} passage{'s' if hit_count != 1 else ''} found"
+        self._update("Analyzing retrieved passages...", detail=detail)
         return result
 
     def read_chunk(self, chunk_id: UUID) -> SourcePassage:
-        if self.emit_progress is not None:
-            self.emit_progress("Reading filing passage...")
-        passage = self.inner.read_chunk(chunk_id)
+        cached = self.seen.get(chunk_id)
+        if cached is not None:
+            return cached
+
+        self._update("Reading filing passage...", detail=f"Chunk {chunk_id}")
+        try:
+            passage = self.inner.read_chunk(chunk_id)
+        except ValueError as exc:
+            raise chunk_not_found_retry(chunk_id) from exc
         self._record([passage])
-        if self.emit_progress is not None:
-            self.emit_progress("Analyzing retrieved passages...")
+        self._update("Analyzing retrieved passages...")
         return passage
 
     def read_surrounding_chunks(
@@ -134,13 +144,38 @@ class _RecordingRetriever:
         *,
         window: int = 1,
     ) -> list[SourcePassage]:
-        if self.emit_progress is not None:
-            self.emit_progress("Reading surrounding context...")
-        passages = self.inner.read_surrounding_chunks(chunk_id, window=window)
+        self._update(
+            "Reading surrounding context...",
+            detail=f"Chunk {chunk_id} · window ±{window}",
+        )
+        try:
+            passages = self.inner.read_surrounding_chunks(chunk_id, window=window)
+        except ValueError as exc:
+            cached = self.seen.get(chunk_id)
+            if cached is None:
+                raise chunk_not_found_retry(chunk_id) from exc
+            passages = self._neighbors_for_cached_anchor(cached, window=window)
         self._record(passages)
-        if self.emit_progress is not None:
-            self.emit_progress("Analyzing retrieved passages...")
+        self._update("Analyzing retrieved passages...")
         return passages
+
+    def _update(self, label: str, *, detail: str | None = None) -> None:
+        if self.activity is not None:
+            self.activity.update_active(label, detail=detail)
+
+    def _neighbors_for_cached_anchor(
+        self,
+        anchor: SourcePassage,
+        *,
+        window: int,
+    ) -> list[SourcePassage]:
+        with session_scope() as session:
+            return _load_neighbor_passages(
+                session,
+                [anchor],
+                neighbor_window=window,
+                existing_chunk_ids={anchor.chunk_id},
+            )
 
     def _record(self, passages: list[SourcePassage]) -> None:
         for passage in passages:
@@ -207,14 +242,25 @@ async def _stream_chat_turn(
     generation: ChatGenerationConfig,
 ) -> AsyncIterator[str]:
     message_id = f"msg_{uuid.uuid4().hex}"
-    progress_updates: queue.Queue[str] = queue.Queue()
+    activity = TurnActivityEmitter()
+    activity_log: list[TurnActivityData] = []
     last_progress = "Analyzing your question..."
 
-    def emit_progress(label: str) -> None:
-        progress_updates.put(label)
+    def emit_activity_updates() -> list[str]:
+        nonlocal last_progress
+        events: list[str] = []
+        for update in activity.drain():
+            activity_log.append(update)
+            events.append(format_activity_event(update))
+            if update.label:
+                last_progress = update.label
+                events.append(format_progress_event(last_progress))
+        return events
 
     yield format_ui_message_sse_event({"type": "start", "messageId": message_id})
-    yield format_progress_event(last_progress)
+    activity.start_thinking("Analyzing your question...")
+    for event in emit_activity_updates():
+        yield event
     await asyncio.sleep(0)
 
     agent_task = asyncio.create_task(
@@ -225,30 +271,26 @@ async def _stream_chat_turn(
             chat_model=chat_model,
             generation=generation,
             grounding_validator=grounding_validator,
-            on_start=emit_progress,
+            activity=activity,
             retriever=retriever,
         )
     )
 
     try:
         while not agent_task.done():
-            progress_changed = False
-            while not progress_updates.empty():
-                last_progress = progress_updates.get_nowait()
-                progress_changed = True
-
-            if progress_changed:
-                yield format_progress_event(last_progress)
+            for event in emit_activity_updates():
+                yield event
                 await asyncio.sleep(0)
-
             await asyncio.sleep(0.05)
 
-        while not progress_updates.empty():
-            last_progress = progress_updates.get_nowait()
-            yield format_progress_event(last_progress)
+        for event in emit_activity_updates():
+            yield event
             await asyncio.sleep(0)
 
         answer, retrieved_passages = agent_task.result()
+        for event in emit_activity_updates():
+            yield event
+            await asyncio.sleep(0)
     except (ModelHTTPError, UnexpectedModelBehavior) as exc:
         message = model_unavailable_message(exc, provider=chat_model.provider)
         logger.warning(
@@ -298,12 +340,18 @@ async def _stream_chat_turn(
             yield event
         return
 
-    yield format_progress_event("Validating sources...", phase="running")
+    validate_id = activity.start("validate", "Validating sources...")
+    for event in emit_activity_updates():
+        yield event
     await asyncio.sleep(0)
 
     try:
         validate(answer, retrieved_passages)
     except GroundingError:
+        activity.end(validate_id, kind="validate", label="Validation failed")
+        for event in emit_activity_updates():
+            yield event
+            await asyncio.sleep(0)
         await chat_store.append_message(
             client,
             user_id=user_id,
@@ -321,7 +369,10 @@ async def _stream_chat_turn(
             yield event
         return
 
-    yield format_progress_event("Saving answer...", phase="running")
+    activity.end(validate_id, kind="validate", label="Sources validated")
+    save_id = activity.start("save", "Saving answer...")
+    for event in emit_activity_updates():
+        yield event
     await asyncio.sleep(0)
 
     await _persist_assistant_answer(
@@ -329,7 +380,12 @@ async def _stream_chat_turn(
         user_id=user_id,
         thread_id=thread_id,
         answer=answer,
+        activity_log=activity_log,
     )
+    activity.end(save_id, kind="save", label="Answer saved")
+    for event in emit_activity_updates():
+        yield event
+    await asyncio.sleep(0)
 
     async for event in stream_grounded_answer_events(
         answer,
@@ -347,11 +403,11 @@ async def _run_agent(
     chat_model: ResolvedChatModel,
     generation: ChatGenerationConfig,
     grounding_validator: GroundingValidator,
-    on_start: Callable[[str], None] | None = None,
+    activity: TurnActivityEmitter | None = None,
     retriever: DocumentRetriever | None = None,
 ) -> tuple[GroundedAnswer, list[SourcePassage]]:
-    if on_start is not None:
-        on_start(f"Thinking with {chat_model.model}...")
+    if activity is not None:
+        activity.start_thinking(f"Thinking with {chat_model.model}...")
 
     inner = retriever if retriever is not None else SessionPerCallDocumentRetriever()
     return await _run_agent_with_retriever(
@@ -362,7 +418,7 @@ async def _run_agent(
         generation=generation,
         grounding_validator=grounding_validator,
         retriever=inner,
-        on_start=on_start,
+        activity=activity,
     )
 
 
@@ -375,11 +431,11 @@ async def _run_agent_with_retriever(
     generation: ChatGenerationConfig,
     grounding_validator: GroundingValidator,
     retriever: DocumentRetriever,
-    on_start: Callable[[str], None] | None,
+    activity: TurnActivityEmitter | None,
 ) -> tuple[GroundedAnswer, list[SourcePassage]]:
     recording_retriever = _RecordingRetriever(
         inner=retriever,
-        emit_progress=on_start,
+        activity=activity,
     )
     deps = DocumentAgentDeps(
         user_id=user_id,
@@ -389,12 +445,29 @@ async def _run_agent_with_retriever(
     )
     agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
     model_settings = build_model_settings(generation)
-    prompt = user_text
-    if generation.max_output_tokens is not None:
-        prompt = user_text + build_length_instruction(generation.max_output_tokens)
+
+    async def event_handler(ctx, events):
+        if activity is None:
+            async for _event in events:
+                pass
+            return
+        await agent_event_stream_handler(
+            activity,
+            model_name=chat_model.model,
+            _ctx=ctx,
+            events=events,
+        )
+
     with document_agent.override(model=agent_model):
-        run = await document_agent.run(prompt, deps=deps, model_settings=model_settings)
-    return limit_grounded_answer(run.output, generation.max_output_tokens), recording_retriever.retrieved_passages
+        run = await document_agent.run(
+            user_text,
+            deps=deps,
+            model_settings=model_settings,
+            event_stream_handler=event_handler if activity is not None else None,
+        )
+    if activity is not None:
+        activity.end_thinking()
+    return run.output, recording_retriever.retrieved_passages
 
 
 async def _persist_assistant_answer(
@@ -403,6 +476,7 @@ async def _persist_assistant_answer(
     user_id: UUID,
     thread_id: UUID,
     answer: GroundedAnswer,
+    activity_log: list[TurnActivityData] | None = None,
 ) -> None:
     message = await chat_store.append_message(
         client,
@@ -423,8 +497,15 @@ async def _persist_assistant_answer(
             for citation in answer.citations
         ],
     )
+    activity_steps = None
+    if activity_log:
+        activity_steps = group_activity_steps(merge_activity_log(activity_log))
     await chat_store.update_message_data(
         client,
         message_id=message.id,
-        message_data=assistant_answer_to_wire(answer, message_id=str(message.id)),
+        message_data=assistant_answer_to_wire(
+            answer,
+            message_id=str(message.id),
+            activity_steps=activity_steps,
+        ),
     )

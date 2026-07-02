@@ -5,6 +5,7 @@ from unittest.mock import patch
 from uuid import UUID
 
 from app.assistant.outputs import Citation, GroundedAnswer
+from app.chat.messages import TurnActivityData
 from app.chat.persistence import assistant_answer_to_wire, enrich_assistant_messages
 from app.database.chats import ChatMessageRecord, MessageCitationRecord
 from app.retrieval.types import SourcePassage
@@ -32,6 +33,37 @@ def _passage() -> SourcePassage:
         source_url="https://example.com/aapl-10k",
         score=0.0,
     )
+
+
+def test_assistant_answer_to_wire_includes_activity_steps() -> None:
+    wire = assistant_answer_to_wire(
+        GroundedAnswer(
+            answer="Apple net income rose [1].",
+            citations=[
+                Citation(
+                    citation_index=1,
+                    chunk_id=CHUNK_ID,
+                    excerpt="Net income increased.",
+                )
+            ],
+            cited_passages=[_passage()],
+        ),
+        message_id=str(MESSAGE_ID),
+        activity_steps=[
+            TurnActivityData(
+                step_id="step-1",
+                kind="search_filings",
+                phase="end",
+                label="Searching filings ×2",
+                detail="NVDA revenue",
+                order=1,
+            )
+        ],
+    )
+
+    part_types = [part["type"] for part in wire["parts"]]
+    assert part_types[0] == "data-activity"
+    assert "text" in part_types
 
 
 def test_assistant_answer_to_wire_includes_citations_and_passages() -> None:

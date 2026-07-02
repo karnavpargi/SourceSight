@@ -5,15 +5,24 @@ from __future__ import annotations
 from uuid import UUID
 
 from app.assistant.outputs import Citation, GroundedAnswer
-from app.chat.messages import grounded_answer_to_ui_message, ui_message_to_wire
+from app.chat.messages import TurnActivityData, grounded_answer_to_ui_message, ui_message_to_wire
 from app.database.chats import ChatMessageRecord, MessageCitationRecord
 from app.database.session import session_scope
 from app.retrieval.retriever import _load_chunks, _to_source_passage
 from app.retrieval.types import SourcePassage
 
 
-def assistant_answer_to_wire(answer: GroundedAnswer, *, message_id: str) -> dict:
-    ui_message = grounded_answer_to_ui_message(answer, message_id=message_id)
+def assistant_answer_to_wire(
+    answer: GroundedAnswer,
+    *,
+    message_id: str,
+    activity_steps: list[TurnActivityData] | None = None,
+) -> dict:
+    ui_message = grounded_answer_to_ui_message(
+        answer,
+        message_id=message_id,
+        activity_steps=activity_steps,
+    )
     return ui_message_to_wire(ui_message)
 
 

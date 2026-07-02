@@ -18,7 +18,7 @@ from app.chat.models_catalog import (
     build_providers_response,
     resolve_chat_model,
 )
-from app.chat.generation import ChatGenerationConfig, DEFAULT_MAX_OUTPUT_TOKENS
+from app.chat.generation import ChatGenerationConfig
 from app.chat.orchestrator import run_chat_turn
 from app.config import ChatProvider
 from app.database import chats as chat_store
@@ -55,11 +55,6 @@ class StreamChatRequest(BaseModel):
     provider: ChatProvider
     model: str = Field(min_length=1)
     temperature: float = Field(default=1.0, ge=0.0, le=2.0)
-    max_output_tokens: int | None = Field(
-        default=DEFAULT_MAX_OUTPUT_TOKENS,
-        alias="maxOutputTokens",
-        ge=1,
-    )
 
 
 @router.get("/chat/providers", response_model=ChatProvidersResponse)
@@ -164,8 +159,5 @@ async def stream_chat(
         user_message_data=body.messages[-1] if body.messages else None,
         grounding_validator=grounding_validator,
         chat_model=chat_model,
-        generation=ChatGenerationConfig(
-            temperature=body.temperature,
-            max_output_tokens=body.max_output_tokens,
-        ),
+        generation=ChatGenerationConfig(temperature=body.temperature),
     )

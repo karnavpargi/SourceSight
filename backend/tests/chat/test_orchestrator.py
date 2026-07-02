@@ -35,7 +35,7 @@ CHUNK_ID = UUID("11111111-1111-1111-1111-111111111111")
 DOCUMENT_ID = UUID("22222222-2222-2222-2222-222222222222")
 NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
 TEST_CHAT_MODEL = ResolvedChatModel(provider="google", model="gemini-2.0-flash")
-TEST_GENERATION = ChatGenerationConfig(temperature=1.0, max_output_tokens=None)
+TEST_GENERATION = ChatGenerationConfig(temperature=1.0)
 
 
 def _passage() -> SourcePassage:
@@ -149,15 +149,15 @@ def _appended_message() -> ChatMessageRecord:
     )
 
 
-def _progress_labels(sse_body: str) -> list[str]:
-    labels: list[str] = []
+def _activity_kinds(sse_body: str) -> list[str]:
+    kinds: list[str] = []
     for line in sse_body.splitlines():
         if not line.startswith("data: ") or line == "data: [DONE]":
             continue
         event = json.loads(line[len("data: ") :])
-        if event.get("type") == "data-progress":
-            labels.append(event["data"]["label"])
-    return labels
+        if event.get("type") == "data-activity" and event["data"].get("phase") == "start":
+            kinds.append(event["data"]["kind"])
+    return kinds
 
 
 def _event_types(sse_body: str) -> list[str]:
@@ -194,13 +194,15 @@ async def _fake_run_agent(
     chat_model: ResolvedChatModel,
     generation: ChatGenerationConfig,
     grounding_validator,
-    on_start: Callable[[str], None] | None = None,
+    activity=None,
     retriever=None,
 ) -> tuple[GroundedAnswer, list[SourcePassage]]:
-    if on_start is not None:
-        on_start(f"Thinking with {chat_model.model}...")
+    if activity is not None:
+        activity.start_thinking(f"Thinking with {chat_model.model}...")
     if retriever is not None:
         retriever.search_filings(user_text)
+    if activity is not None:
+        activity.end_thinking()
     return _grounded_answer(), [_passage()]
 
 
@@ -240,7 +242,9 @@ async def test_run_chat_turn_emits_progress_before_answer() -> None:
         body = await _collect(response)
 
     assert _assembled_text(body) == "AWS operating income rose [1]."
-    assert "Analyzing your question..." in _progress_labels(body)
+    assert "thinking" in _activity_kinds(body)
+    assert "validate" in _activity_kinds(body)
+    assert "save" in _activity_kinds(body)
     assert _event_types(body).index("start") < _event_types(body).index("text-delta")
     assert "data: [DONE]" in body
     validate_grounding.assert_called_once()

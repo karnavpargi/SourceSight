@@ -237,7 +237,6 @@ def test_stream_chat_delegates_to_orchestrator(
     run_chat_turn.assert_awaited_once()
     assert run_chat_turn.await_args.kwargs["user_text"] == "AWS operating income"
     assert run_chat_turn.await_args.kwargs["generation"].temperature == 1.0
-    assert run_chat_turn.await_args.kwargs["generation"].max_output_tokens == 300
 
 
 def test_stream_chat_passes_generation_settings(
@@ -274,14 +273,12 @@ def test_stream_chat_passes_generation_settings(
                 "provider": "google",
                 "model": "gemini-2.0-flash",
                 "temperature": 0.3,
-                "maxOutputTokens": 512,
             },
         )
 
     assert response.status_code == 200
     generation = run_chat_turn.await_args.kwargs["generation"]
     assert generation.temperature == 0.3
-    assert generation.max_output_tokens == 512
 
 
 def test_stream_chat_rejects_temperature_out_of_range(

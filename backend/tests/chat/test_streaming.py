@@ -101,6 +101,24 @@ def test_stream_grounded_answer_emits_progress_and_text() -> None:
     assert event_types[-1] == "finish"
 
 
+def test_format_activity_event() -> None:
+    from app.chat.messages import TurnActivityData
+    from app.chat.streaming import format_activity_event
+
+    event = format_activity_event(
+        TurnActivityData(
+            step_id="step-1",
+            kind="search_filings",
+            phase="start",
+            label="Searching filings",
+            detail="NVDA",
+            order=1,
+        )
+    )
+    assert '"type":"data-activity"' in event.replace(" ", "")
+    assert "Searching filings" in event
+
+
 def test_format_progress_event() -> None:
     from app.chat.streaming import format_progress_event
 

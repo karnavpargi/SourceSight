@@ -14,6 +14,7 @@ from app.chat.messages import (
     ChatUIMessage,
     ProgressData,
     TextPart,
+    TurnActivityData,
     grounded_answer_to_ui_message,
 )
 
@@ -28,6 +29,16 @@ STUB_ASSISTANT_REPLY = (
 
 def format_ui_message_sse_event(payload: dict) -> str:
     return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+def format_activity_event(activity: TurnActivityData) -> str:
+    return format_ui_message_sse_event(
+        {
+            "type": "data-activity",
+            "id": activity.step_id,
+            "data": activity.model_dump(mode="json"),
+        }
+    )
 
 
 def format_progress_event(label: str, *, phase: str = "running") -> str:

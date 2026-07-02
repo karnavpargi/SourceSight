@@ -41,14 +41,29 @@ class ProgressData(BaseModel):
     phase: Literal["running", "complete"] = "running"
 
 
+class TurnActivityData(BaseModel):
+    step_id: str
+    kind: str
+    phase: Literal["start", "update", "end"]
+    label: str
+    detail: str | None = None
+    order: int = 0
+
+
 class ProgressPart(BaseModel):
     type: Literal["data-progress"] = "data-progress"
     data: ProgressData
     id: str | None = None
 
 
+class TurnActivityPart(BaseModel):
+    type: Literal["data-activity"] = "data-activity"
+    data: TurnActivityData
+    id: str | None = None
+
+
 ChatUIPart = Annotated[
-    TextPart | CitationPart | SourcePassagePart | ProgressPart,
+    TextPart | CitationPart | SourcePassagePart | ProgressPart | TurnActivityPart,
     Field(discriminator="type"),
 ]
 
@@ -87,9 +102,21 @@ def message_text(message: ChatUIMessage) -> str:
     return "".join(part.text for part in message.parts if isinstance(part, TextPart))
 
 
-def grounded_answer_to_ui_message(answer: GroundedAnswer, *, message_id: str) -> ChatUIMessage:
+def grounded_answer_to_ui_message(
+    answer: GroundedAnswer,
+    *,
+    message_id: str,
+    activity_steps: list[TurnActivityData] | None = None,
+) -> ChatUIMessage:
     """Build a persisted/streamed assistant UI message from a grounded answer."""
-    parts: list[ChatUIPart] = [TextPart(text=answer.answer)]
+    parts: list[ChatUIPart] = []
+    if activity_steps:
+        parts.extend(
+            TurnActivityPart(data=step)
+            for step in activity_steps
+            if step.label.strip()
+        )
+    parts.append(TextPart(text=answer.answer))
     parts.extend(_citation_to_part(citation) for citation in answer.citations)
     parts.extend(SourcePassagePart(data=passage) for passage in answer.cited_passages)
     return ChatUIMessage(id=message_id, role="assistant", parts=parts)
@@ -134,6 +161,8 @@ def _parse_part(data: dict) -> ChatUIPart:
         return SourcePassagePart.model_validate(data)
     if part_type == "data-progress":
         return ProgressPart.model_validate(data)
+    if part_type == "data-activity":
+        return TurnActivityPart.model_validate(data)
     raise ValueError(f"Unsupported message part type: {part_type!r}")
 
 

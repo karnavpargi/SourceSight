@@ -1,9 +1,9 @@
 import type { UIMessage } from 'ai'
 import { Bot, UserRound } from 'lucide-react'
 
-import { CitationPlaceholder } from '@/components/chat/CitationPlaceholder'
+import { SourceCitations } from '@/components/chat/SourceCitations'
 import { Skeleton } from '@/components/ui/skeleton'
-import { messageText } from '@/lib/chat'
+import { messageCitations, messageSourcePassages, messageText } from '@/lib/chat'
 
 interface MessageListProps {
   messages: UIMessage[]
@@ -50,6 +50,8 @@ export function MessageList({
       {messages.map((message) => {
         const isUser = message.role === 'user'
         const text = messageText(message)
+        const citations = messageCitations(message)
+        const passages = messageSourcePassages(message)
         const Icon = isUser ? UserRound : Bot
 
         return (
@@ -78,10 +80,8 @@ export function MessageList({
                 {isUser ? 'You' : 'SourceSight'}
               </p>
               <p className="whitespace-pre-wrap">{text}</p>
-              {!isUser && message.id === messages.at(-1)?.id && (
-                <div className="mt-4">
-                  <CitationPlaceholder />
-                </div>
+              {!isUser && (
+                <SourceCitations citations={citations} passages={passages} />
               )}
             </div>
           </div>

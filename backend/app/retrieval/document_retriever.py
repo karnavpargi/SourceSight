@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.database.session import session_scope
 from app.retrieval.retriever import (
     DEFAULT_NEIGHBOR_WINDOW,
     DEFAULT_RETRIEVAL_LIMIT,
@@ -58,3 +59,40 @@ class SessionDocumentRetriever:
             neighbor_window=window,
             existing_chunk_ids={chunk_id},
         )
+
+
+@dataclass
+class SessionPerCallDocumentRetriever:
+    """Opens a fresh DB session for each tool call.
+
+    PydanticAI runs sync tools on worker threads, so a single shared session is
+    not safe across concurrent tool invocations.
+    """
+
+    neighbor_window: int = DEFAULT_NEIGHBOR_WINDOW
+
+    def search_filings(self, query: str, *, limit: int = DEFAULT_RETRIEVAL_LIMIT) -> RetrievalResult:
+        with session_scope() as session:
+            return SessionDocumentRetriever(
+                session,
+                neighbor_window=self.neighbor_window,
+            ).search_filings(query, limit=limit)
+
+    def read_chunk(self, chunk_id: UUID) -> SourcePassage:
+        with session_scope() as session:
+            return SessionDocumentRetriever(
+                session,
+                neighbor_window=self.neighbor_window,
+            ).read_chunk(chunk_id)
+
+    def read_surrounding_chunks(
+        self,
+        chunk_id: UUID,
+        *,
+        window: int = 1,
+    ) -> list[SourcePassage]:
+        with session_scope() as session:
+            return SessionDocumentRetriever(
+                session,
+                neighbor_window=self.neighbor_window,
+            ).read_surrounding_chunks(chunk_id, window=window)

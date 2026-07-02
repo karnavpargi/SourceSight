@@ -106,7 +106,10 @@ def test_get_current_user_valid_token(auth_app: FastAPI) -> None:
     with patch(
         "app.auth.dependencies.create_user_client",
         new=AsyncMock(return_value=mock_client),
-    ) as create_user_client:
+    ) as create_user_client, patch(
+        "app.auth.dependencies.ensure_profile",
+        new=AsyncMock(),
+    ) as ensure_profile:
         response = TestClient(auth_app).get(
             "/me",
             headers={"Authorization": "Bearer valid-token"},
@@ -119,3 +122,4 @@ def test_get_current_user_valid_token(auth_app: FastAPI) -> None:
     }
     create_user_client.assert_awaited_once_with("valid-token")
     mock_client.auth.get_user.assert_awaited_once_with("valid-token")
+    ensure_profile.assert_awaited_once()

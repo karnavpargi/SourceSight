@@ -12,12 +12,18 @@ from supabase import AsyncClient
 from app.auth.dependencies import get_current_user, get_user_client
 from app.auth.types import CurrentUser
 from app.chat.messages import extract_latest_user_text
+from app.chat.models_catalog import (
+    ChatProvidersResponse,
+    ModelCatalogError,
+    build_providers_response,
+    resolve_chat_model,
+)
+from app.chat.generation import ChatGenerationConfig, DEFAULT_MAX_OUTPUT_TOKENS
 from app.chat.orchestrator import run_chat_turn
+from app.config import ChatProvider
 from app.database import chats as chat_store
 from app.database.chats import ChatForbiddenError, ChatNotFoundError
-from app.database.session import session_scope
 from app.grounding.validator import grounding_validator
-from app.retrieval.document_retriever import SessionDocumentRetriever
 
 router = APIRouter(tags=["chat"])
 
@@ -46,6 +52,28 @@ class StreamChatRequest(BaseModel):
 
     thread_id: UUID = Field(alias="threadId")
     messages: list[dict]
+    provider: ChatProvider
+    model: str = Field(min_length=1)
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0)
+    max_output_tokens: int | None = Field(
+        default=DEFAULT_MAX_OUTPUT_TOKENS,
+        alias="maxOutputTokens",
+        ge=1,
+    )
+
+
+@router.get("/chat/providers", response_model=ChatProvidersResponse)
+async def list_chat_providers(
+    user: CurrentUser = Depends(get_current_user),
+) -> ChatProvidersResponse:
+    del user
+    try:
+        return build_providers_response()
+    except ModelCatalogError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/threads", response_model=list[ThreadSummary])
@@ -123,14 +151,21 @@ async def stream_chat(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    with session_scope() as session:
-        retriever = SessionDocumentRetriever(session)
-        return await run_chat_turn(
-            client,
-            user_id=user.id,
-            thread_id=body.thread_id,
-            user_text=user_text,
-            user_message_data=body.messages[-1] if body.messages else None,
-            retriever=retriever,
-            grounding_validator=grounding_validator,
-        )
+    try:
+        chat_model = resolve_chat_model(body.provider, body.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    return await run_chat_turn(
+        client,
+        user_id=user.id,
+        thread_id=body.thread_id,
+        user_text=user_text,
+        user_message_data=body.messages[-1] if body.messages else None,
+        grounding_validator=grounding_validator,
+        chat_model=chat_model,
+        generation=ChatGenerationConfig(
+            temperature=body.temperature,
+            max_output_tokens=body.max_output_tokens,
+        ),
+    )

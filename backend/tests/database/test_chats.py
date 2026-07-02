@@ -66,10 +66,9 @@ def test_list_threads_returns_parsed_records() -> None:
 
 
 def test_create_thread_inserts_and_returns_record() -> None:
-    client, table = _mock_table_chain(data=_thread_row())
+    client, table = _mock_table_chain(data=[_thread_row()])
     table.insert.return_value = table
     table.select.return_value = table
-    table.single.return_value = table
 
     thread = asyncio.run(create_thread(client, USER_ID, "New thread"))
 

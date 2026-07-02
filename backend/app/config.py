@@ -1,8 +1,11 @@
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal, Self
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+ChatProvider = Literal["local", "google", "opencode"]
+CHAT_PROVIDERS: frozenset[str] = frozenset({"local", "google", "opencode"})
 
 
 class Settings(BaseSettings):
@@ -21,13 +24,13 @@ class Settings(BaseSettings):
     # Postgres (Alembic + direct DB access)
     database_url: str
 
-    # OpenAI (LLM + embeddings when provider=openai)
-    openai_api_key: str
-    openai_chat_model: str = "gpt-4o-mini"
-    openai_embedding_model: str = "text-embedding-3-small"
+    # Chat LLM — local (Ollama), Google AI Studio, or OpenCode Zen
+    chat_provider: ChatProvider = "google"
+    google_api_key: str = ""
+    opencode_api_key: str = ""
+    opencode_base_url: str = "https://opencode.ai/zen/go/v1"
 
-    # Embeddings (provider-agnostic)
-    embedding_provider: str = "ollama"
+    # Embeddings (local Ollama only)
     embedding_dimensions: int = 768
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "nomic-embed-text"
@@ -41,6 +44,32 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @field_validator("chat_provider", mode="before")
+    @classmethod
+    def normalize_chat_provider(cls, value: str) -> str:
+        provider = value.lower()
+        if provider == "ollama":
+            return "local"
+        return provider
+
+    @model_validator(mode="after")
+    def require_provider_keys(self) -> Self:
+        if self.chat_provider not in CHAT_PROVIDERS:
+            supported = ", ".join(sorted(CHAT_PROVIDERS))
+            raise ValueError(f"CHAT_PROVIDER must be one of: {supported}")
+
+        if self.chat_provider == "google" and not self.google_api_key.strip():
+            raise ValueError("GOOGLE_API_KEY is required when CHAT_PROVIDER is google")
+        if self.chat_provider == "opencode" and not self.opencode_api_key.strip():
+            raise ValueError("OPENCODE_API_KEY is required when CHAT_PROVIDER is opencode")
+        return self
+
+    def ollama_openai_base_url(self) -> str:
+        base = self.ollama_base_url.rstrip("/")
+        if base.endswith("/v1"):
+            return base
+        return f"{base}/v1"
 
 
 @lru_cache

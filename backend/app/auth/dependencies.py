@@ -6,6 +6,7 @@ from supabase import AsyncClient
 from supabase_auth.errors import AuthApiError
 
 from app.auth.types import CurrentUser
+from app.database.profiles import ensure_profile
 from app.database.supabase import create_user_client
 
 _bearer = HTTPBearer(auto_error=False)
@@ -54,4 +55,6 @@ async def get_current_user(access_token: str = Depends(get_access_token)) -> Cur
             detail="Invalid or expired token",
         )
 
-    return CurrentUser(id=UUID(user.id), email=user.email)
+    current_user = CurrentUser(id=UUID(user.id), email=user.email)
+    await ensure_profile(client, user_id=current_user.id, email=current_user.email)
+    return current_user

@@ -36,8 +36,19 @@ class SourcePassagePart(BaseModel):
     id: str | None = None
 
 
+class ProgressData(BaseModel):
+    label: str
+    phase: Literal["running", "complete"] = "running"
+
+
+class ProgressPart(BaseModel):
+    type: Literal["data-progress"] = "data-progress"
+    data: ProgressData
+    id: str | None = None
+
+
 ChatUIPart = Annotated[
-    TextPart | CitationPart | SourcePassagePart,
+    TextPart | CitationPart | SourcePassagePart | ProgressPart,
     Field(discriminator="type"),
 ]
 
@@ -121,6 +132,8 @@ def _parse_part(data: dict) -> ChatUIPart:
         return CitationPart.model_validate(data)
     if part_type == "data-source-passage":
         return SourcePassagePart.model_validate(data)
+    if part_type == "data-progress":
+        return ProgressPart.model_validate(data)
     raise ValueError(f"Unsupported message part type: {part_type!r}")
 
 

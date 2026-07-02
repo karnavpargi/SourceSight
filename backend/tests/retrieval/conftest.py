@@ -31,9 +31,6 @@ def ingested_corpus() -> None:
 @pytest.fixture(scope="module")
 def ollama_embeddings() -> None:
     """Skip unless Ollama is reachable for query embeddings."""
-    if settings.embedding_provider != "ollama":
-        pytest.skip(f"Integration retrieval tests require EMBEDDING_PROVIDER=ollama, got {settings.embedding_provider!r}.")
-
     try:
         response = httpx.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags", timeout=3.0)
         response.raise_for_status()

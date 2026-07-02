@@ -80,6 +80,35 @@ def test_stub_reply_is_non_empty() -> None:
     assert STUB_ASSISTANT_REPLY.strip()
 
 
+def test_stream_grounded_answer_emits_progress_and_text() -> None:
+    from app.chat.streaming import format_progress_event, stream_grounded_answer_events
+
+    async def collect() -> str:
+        parts = [
+            chunk
+            async for chunk in stream_grounded_answer_events(_grounded_answer())
+        ]
+        return "".join(parts)
+
+    body = asyncio.run(collect())
+    events = _parse_events(body)
+    event_types = [event["type"] for event in events]
+
+    assert event_types[0] == "start"
+    assert "data-progress" in event_types
+    assert "text-start" in event_types
+    assert "text-delta" in event_types
+    assert event_types[-1] == "finish"
+
+
+def test_format_progress_event() -> None:
+    from app.chat.streaming import format_progress_event
+
+    event = format_progress_event("Searching indexed filings...")
+    assert '"type":"data-progress"' in event.replace(" ", "")
+    assert "Searching indexed filings..." in event
+
+
 def test_stream_grounded_answer_emits_text_and_data_parts() -> None:
     async def collect() -> str:
         response = stream_grounded_answer(_grounded_answer())

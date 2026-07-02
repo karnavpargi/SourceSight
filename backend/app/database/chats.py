@@ -51,6 +51,10 @@ class ChatForbiddenError(Exception):
     """Raised when a thread belongs to another user."""
 
 
+class ChatPersistenceError(Exception):
+    """Raised when a write query returns no rows."""
+
+
 async def list_threads(client: AsyncClient, user_id: UUID) -> list[ChatThreadRecord]:
     response = (
         await client.table("chat_threads")
@@ -67,10 +71,60 @@ async def create_thread(client: AsyncClient, user_id: UUID, title: str) -> ChatT
         await client.table("chat_threads")
         .insert({"user_id": str(user_id), "title": title})
         .select("*")
-        .single()
         .execute()
     )
-    return _parse_thread(response.data)
+    return _parse_thread(_require_row(response.data))
+
+
+async def count_thread_messages(client: AsyncClient, thread_id: UUID) -> int:
+    response = (
+        await client.table("chat_messages")
+        .select("id", count="exact", head=True)
+        .eq("thread_id", str(thread_id))
+        .execute()
+    )
+    return response.count or 0
+
+
+async def update_thread_title(
+    client: AsyncClient,
+    user_id: UUID,
+    thread_id: UUID,
+    title: str,
+) -> ChatThreadRecord:
+    await get_thread(client, user_id, thread_id)
+    response = (
+        await client.table("chat_threads")
+        .update({"title": title, "updated_at": datetime.now().isoformat()})
+        .eq("id", str(thread_id))
+        .select("*")
+        .execute()
+    )
+    return _parse_thread(_require_row(response.data))
+
+
+async def title_thread_from_first_message(
+    client: AsyncClient,
+    user_id: UUID,
+    thread_id: UUID,
+    *,
+    user_text: str,
+    default_title: str,
+    derive_title,
+) -> None:
+    thread = await get_thread(client, user_id, thread_id)
+    if thread.title != default_title:
+        return
+
+    if await count_thread_messages(client, thread_id) != 1:
+        return
+
+    await update_thread_title(
+        client,
+        user_id,
+        thread_id,
+        derive_title(user_text),
+    )
 
 
 async def get_thread(client: AsyncClient, user_id: UUID, thread_id: UUID) -> ChatThreadRecord:
@@ -113,7 +167,20 @@ async def list_thread_messages(
         .order("created_at")
         .execute()
     )
-    return [_parse_message(row) for row in response.data or []]
+    messages = [_parse_message(row) for row in response.data or []]
+    assistant_ids = [
+        message.id
+        for message in messages
+        if message.role == "assistant" and message.message_data is None
+    ]
+    if not assistant_ids:
+        return messages
+
+    # persistence imports this module; keep the import local to avoid a cycle.
+    from app.chat.persistence import enrich_assistant_messages
+
+    citations_by_message = await list_citations_for_messages(client, assistant_ids)
+    return enrich_assistant_messages(messages, citations_by_message)
 
 
 async def append_message(
@@ -134,12 +201,12 @@ async def append_message(
     if message_data is not None:
         payload["message_data"] = message_data
 
-    response = await client.table("chat_messages").insert(payload).select("*").single().execute()
+    response = await client.table("chat_messages").insert(payload).select("*").execute()
     await client.table("chat_threads").update({"updated_at": datetime.now().isoformat()}).eq(
         "id",
         str(thread_id),
     ).execute()
-    return _parse_message(response.data)
+    return _parse_message(_require_row(response.data))
 
 
 async def attach_citations(
@@ -162,6 +229,43 @@ async def attach_citations(
     ]
     response = await client.table("message_citations").insert(rows).select("*").execute()
     return [_parse_citation(row) for row in response.data or []]
+
+
+async def list_citations_for_messages(
+    client: AsyncClient,
+    message_ids: list[UUID],
+) -> dict[UUID, list[MessageCitationRecord]]:
+    if not message_ids:
+        return {}
+
+    response = (
+        await client.table("message_citations")
+        .select("*")
+        .in_("message_id", [str(message_id) for message_id in message_ids])
+        .order("citation_index")
+        .execute()
+    )
+    grouped: dict[UUID, list[MessageCitationRecord]] = {}
+    for row in response.data or []:
+        citation = _parse_citation(row)
+        grouped.setdefault(citation.message_id, []).append(citation)
+    return grouped
+
+
+async def update_message_data(
+    client: AsyncClient,
+    *,
+    message_id: UUID,
+    message_data: dict,
+) -> ChatMessageRecord:
+    response = (
+        await client.table("chat_messages")
+        .update({"message_data": message_data})
+        .eq("id", str(message_id))
+        .select("*")
+        .execute()
+    )
+    return _parse_message(_require_row(response.data))
 
 
 def _parse_thread(row: dict) -> ChatThreadRecord:
@@ -198,3 +302,11 @@ def _parse_citation(row: dict) -> MessageCitationRecord:
 
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _require_row(data: list[dict] | dict | None) -> dict:
+    if isinstance(data, dict):
+        return data
+    if not data:
+        raise ChatPersistenceError("Expected one row from database write")
+    return data[0]

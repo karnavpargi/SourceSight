@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from supabase_auth.errors import AuthApiError
 
+from app.chat.models_catalog import ChatProvidersResponse, ResolvedChatModel
 from app.database.chats import ChatForbiddenError, ChatMessageRecord, ChatNotFoundError, ChatThreadRecord
 from app.main import create_app
 
@@ -18,6 +19,12 @@ MESSAGE_ID = UUID("880e8400-e29b-41d4-a716-446655440003")
 VALID_TOKEN = "valid-token"
 EXPIRED_TOKEN = "expired-token"
 NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _mock_ensure_profile() -> None:
+    with patch("app.auth.dependencies.ensure_profile", new=AsyncMock()):
+        yield
 
 
 @pytest.fixture
@@ -154,9 +161,40 @@ def test_list_thread_messages_returns_404_for_missing_thread(client: TestClient)
 def test_stream_chat_requires_authentication(client: TestClient) -> None:
     response = client.post(
         "/chat/stream",
-        json={"threadId": str(THREAD_ID), "messages": []},
+        json={
+            "threadId": str(THREAD_ID),
+            "messages": [],
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+        },
     )
     assert response.status_code == 401
+
+
+def test_list_chat_providers_returns_catalog(client: TestClient) -> None:
+    mock_supabase = MagicMock()
+    mock_supabase.auth.get_user = AsyncMock(return_value=_mock_user_response())
+    catalog = ChatProvidersResponse(
+        default_provider="google",
+        default_model="gemini-2.0-flash",
+        providers=[
+            {
+                "id": "google",
+                "label": "Google AI Studio",
+                "default_model": "gemini-2.0-flash",
+                "models": [{"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash"}],
+            }
+        ],
+    )
+
+    with patch("app.auth.dependencies.create_user_client", new=AsyncMock(return_value=mock_supabase)), patch(
+        "app.api.chat.build_providers_response",
+        return_value=catalog,
+    ):
+        response = client.get("/chat/providers", headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["default_provider"] == "google"
 
 
 def test_stream_chat_delegates_to_orchestrator(
@@ -171,6 +209,9 @@ def test_stream_chat_delegates_to_orchestrator(
     with patch("app.auth.dependencies.create_user_client", new=AsyncMock(return_value=mock_supabase)), patch(
         "app.api.chat.chat_store.get_thread",
         new=AsyncMock(return_value=thread_record),
+    ), patch(
+        "app.api.chat.resolve_chat_model",
+        return_value=ResolvedChatModel(provider="google", model="gemini-2.0-flash"),
     ), patch(
         "app.api.chat.run_chat_turn",
         new=AsyncMock(return_value=mock_response),
@@ -187,12 +228,92 @@ def test_stream_chat_delegates_to_orchestrator(
                         "parts": [{"type": "text", "text": "AWS operating income"}],
                     }
                 ],
+                "provider": "google",
+                "model": "gemini-2.0-flash",
             },
         )
 
     assert response.status_code == 200
     run_chat_turn.assert_awaited_once()
     assert run_chat_turn.await_args.kwargs["user_text"] == "AWS operating income"
+    assert run_chat_turn.await_args.kwargs["generation"].temperature == 1.0
+    assert run_chat_turn.await_args.kwargs["generation"].max_output_tokens == 300
+
+
+def test_stream_chat_passes_generation_settings(
+    client: TestClient,
+    thread_record: ChatThreadRecord,
+) -> None:
+    mock_supabase = MagicMock()
+    mock_supabase.auth.get_user = AsyncMock(return_value=_mock_user_response())
+    mock_response = MagicMock(status_code=200)
+    mock_response.headers = {"content-type": "text/event-stream"}
+
+    with patch("app.auth.dependencies.create_user_client", new=AsyncMock(return_value=mock_supabase)), patch(
+        "app.api.chat.chat_store.get_thread",
+        new=AsyncMock(return_value=thread_record),
+    ), patch(
+        "app.api.chat.resolve_chat_model",
+        return_value=ResolvedChatModel(provider="google", model="gemini-2.0-flash"),
+    ), patch(
+        "app.api.chat.run_chat_turn",
+        new=AsyncMock(return_value=mock_response),
+    ) as run_chat_turn:
+        response = client.post(
+            "/chat/stream",
+            headers=_auth_headers(),
+            json={
+                "threadId": str(THREAD_ID),
+                "messages": [
+                    {
+                        "id": "user-1",
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "AWS operating income"}],
+                    }
+                ],
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "temperature": 0.3,
+                "maxOutputTokens": 512,
+            },
+        )
+
+    assert response.status_code == 200
+    generation = run_chat_turn.await_args.kwargs["generation"]
+    assert generation.temperature == 0.3
+    assert generation.max_output_tokens == 512
+
+
+def test_stream_chat_rejects_temperature_out_of_range(
+    client: TestClient,
+    thread_record: ChatThreadRecord,
+) -> None:
+    mock_supabase = MagicMock()
+    mock_supabase.auth.get_user = AsyncMock(return_value=_mock_user_response())
+
+    with patch("app.auth.dependencies.create_user_client", new=AsyncMock(return_value=mock_supabase)), patch(
+        "app.api.chat.chat_store.get_thread",
+        new=AsyncMock(return_value=thread_record),
+    ):
+        response = client.post(
+            "/chat/stream",
+            headers=_auth_headers(),
+            json={
+                "threadId": str(THREAD_ID),
+                "messages": [
+                    {
+                        "id": "user-1",
+                        "role": "user",
+                        "parts": [{"type": "text", "text": "AWS operating income"}],
+                    }
+                ],
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "temperature": 2.5,
+            },
+        )
+
+    assert response.status_code == 422
 
 
 def test_user_a_cannot_access_user_b_thread_messages(client: TestClient) -> None:

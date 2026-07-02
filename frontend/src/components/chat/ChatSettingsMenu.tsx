@@ -2,7 +2,6 @@ import { useCallback } from 'react'
 import { ChevronDown, Loader2, SlidersHorizontal } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   Popover,
   PopoverContent,
@@ -13,7 +12,6 @@ import {
 } from '@/components/ui/popover'
 import { useChatProviderCatalog } from '@/hooks/useChatProviderCatalog'
 import {
-  DEFAULT_CHAT_GENERATION,
   type ChatGenerationSettings,
 } from '@/lib/chat-generation'
 import {
@@ -176,33 +174,6 @@ export function ChatSettingsMenu({
                   })
                 }}
               />
-            </label>
-
-            <label className="flex flex-col gap-1.5">
-              <span className="text-muted-foreground text-xs font-medium">
-                Max response tokens
-              </span>
-              <Input
-                type="number"
-                min={1}
-                placeholder={String(DEFAULT_CHAT_GENERATION.maxOutputTokens)}
-                value={generationSettings.maxOutputTokens ?? ''}
-                className="bg-secondary/40 border-glass-border h-9"
-                onChange={(event) => {
-                  const raw = event.target.value.trim()
-                  onGenerationChange({
-                    ...generationSettings,
-                    maxOutputTokens:
-                      raw === '' ? null : Number.parseInt(raw, 10),
-                  })
-                }}
-              />
-              <span className="text-muted-foreground text-[11px]">
-                Limits answer text only.{' '}
-                {generationSettings.maxOutputTokens === null
-                  ? 'Unlimited.'
-                  : `≈ ${Math.max(1, Math.round(generationSettings.maxOutputTokens * 0.75))} words.`}
-              </span>
             </label>
           </div>
         )}

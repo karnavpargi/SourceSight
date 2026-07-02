@@ -10,6 +10,56 @@ type Block =
   | { type: 'ul'; items: string[] }
   | { type: 'ol'; items: string[] }
   | { type: 'code'; language: string; text: string }
+  | { type: 'table'; headers: string[]; rows: string[][] }
+
+function isTableRow(line: string): boolean {
+  const trimmed = line.trim()
+  if (trimmed.startsWith('|') && trimmed.includes('|', 1)) {
+    return true
+  }
+
+  const cells = trimmed.split('|').map((cell) => cell.trim())
+  return cells.length >= 3 && cells.every((cell) => cell.length > 0)
+}
+
+function isTableSeparator(line: string): boolean {
+  if (!isTableRow(line)) {
+    return false
+  }
+
+  return line
+    .trim()
+    .slice(1)
+    .split('|')
+    .every((cell) => /^:?-{3,}:?$/.test(cell.trim()))
+}
+
+function parseTableRow(line: string): string[] {
+  const trimmed = line.trim()
+  const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
+  const withoutTrailing = inner.endsWith('|') ? inner.slice(0, -1) : inner
+  return withoutTrailing.split('|').map((cell) => cell.trim())
+}
+
+function parseMarkdownTable(lines: string[]): { headers: string[]; rows: string[][] } | null {
+  if (lines.length < 2) {
+    return null
+  }
+
+  const headers = parseTableRow(lines[0])
+  if (headers.length === 0 || headers.every((cell) => cell.length === 0)) {
+    return null
+  }
+
+  const bodyStart = isTableSeparator(lines[1]) ? 2 : 1
+  const rows = lines.slice(bodyStart).map(parseTableRow).filter((row) => row.some(Boolean))
+
+  if (rows.length === 0 && bodyStart === 1 && !isTableSeparator(lines[1])) {
+    return null
+  }
+
+  return { headers, rows }
+}
 
 function parseBlocks(content: string): Block[] {
   const blocks: Block[] = []
@@ -78,6 +128,22 @@ function parseTextSegment(segment: string, blocks: Block[]): void {
       continue
     }
 
+    if (isTableRow(trimmed)) {
+      const tableLines: string[] = []
+      while (index < lines.length && isTableRow(lines[index].trim())) {
+        tableLines.push(lines[index].trim())
+        index += 1
+      }
+
+      const table = parseMarkdownTable(tableLines)
+      if (table) {
+        blocks.push({ type: 'table', headers: table.headers, rows: table.rows })
+      } else {
+        blocks.push({ type: 'paragraph', text: tableLines.join(' ') })
+      }
+      continue
+    }
+
     const paragraphLines: string[] = [trimmed]
     index += 1
     while (
@@ -85,7 +151,8 @@ function parseTextSegment(segment: string, blocks: Block[]): void {
       lines[index].trim().length > 0 &&
       !/^#{1,3}\s+/.test(lines[index].trim()) &&
       !/^[-*]\s+/.test(lines[index].trim()) &&
-      !/^\d+\.\s+/.test(lines[index].trim())
+      !/^\d+\.\s+/.test(lines[index].trim()) &&
+      !isTableRow(lines[index].trim())
     ) {
       paragraphLines.push(lines[index].trim())
       index += 1
@@ -262,6 +329,49 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
               >
                 <code>{block.text}</code>
               </pre>
+            )
+          case 'table':
+            return (
+              <div key={key} className="overflow-x-auto rounded-lg border border-border/50">
+                <table className="w-full min-w-[32rem] border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-secondary/40 border-border/60 border-b">
+                      {block.headers.map((header, headerIndex) => (
+                        <th
+                          key={`${key}-h-${headerIndex}`}
+                          className="text-muted-foreground px-3 py-2 text-left font-medium whitespace-nowrap"
+                        >
+                          {renderInline(header, `${key}-h-${headerIndex}`)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {block.rows.map((row, rowIndex) => (
+                      <tr
+                        key={`${key}-r-${rowIndex}`}
+                        className="border-border/40 border-b last:border-b-0 even:bg-secondary/15"
+                      >
+                        {block.headers.map((_, cellIndex) => (
+                          <td
+                            key={`${key}-r-${rowIndex}-c-${cellIndex}`}
+                            className={`px-3 py-2 align-top ${
+                              cellIndex === 0
+                                ? 'whitespace-normal'
+                                : 'whitespace-nowrap tabular-nums'
+                            }`}
+                          >
+                            {renderInline(
+                              row[cellIndex] ?? '',
+                              `${key}-r-${rowIndex}-c-${cellIndex}`,
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )
           default: {
             const _exhaustive: never = block

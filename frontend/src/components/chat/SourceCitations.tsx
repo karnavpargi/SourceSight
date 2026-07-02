@@ -1,6 +1,8 @@
 import { ExternalLink, FileText } from 'lucide-react'
 
+import { MarkdownContent } from '@/components/chat/MarkdownContent'
 import type { CitationData, SourcePassageData } from '@/lib/chat'
+import { normalizePassageMarkdown } from '@/lib/passage-text'
 
 interface SourceCitationsProps {
   citations: CitationData[]
@@ -52,8 +54,10 @@ export function SourceCitations({ citations, passages }: SourceCitationsProps) {
                   <p className="text-muted-foreground text-xs">{passage.section}</p>
                 )}
 
-                <blockquote className="border-primary/30 text-foreground border-l-2 pl-3 text-xs leading-relaxed">
-                  {citation.excerpt}
+                <blockquote className="border-primary/30 text-foreground border-l-2 pl-3 text-xs leading-relaxed [&_table]:text-[11px]">
+                  <MarkdownContent
+                    content={normalizePassageMarkdown(citation.excerpt)}
+                  />
                 </blockquote>
 
                 {passage && (
@@ -61,9 +65,11 @@ export function SourceCitations({ citations, passages }: SourceCitationsProps) {
                     <summary className="text-primary cursor-pointer font-medium">
                       View full passage
                     </summary>
-                    <p className="text-muted-foreground mt-2 whitespace-pre-wrap leading-relaxed">
-                      {passage.content}
-                    </p>
+                    <div className="text-muted-foreground mt-2 leading-relaxed [&_table]:text-[11px]">
+                      <MarkdownContent
+                        content={normalizePassageMarkdown(passage.content)}
+                      />
+                    </div>
                     <div className="text-muted-foreground mt-2 flex flex-wrap items-center gap-3">
                       <span className="inline-flex items-center gap-1">
                         <FileText className="size-3.5" strokeWidth={2} />

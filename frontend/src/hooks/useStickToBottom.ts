@@ -31,7 +31,14 @@ export function useStickToBottom(scrollKey: unknown) {
       return
     }
 
-    scrollToBottom()
+    const frame = requestAnimationFrame(() => {
+      scrollToBottom()
+      requestAnimationFrame(scrollToBottom)
+    })
+
+    return () => {
+      cancelAnimationFrame(frame)
+    }
   }, [scrollKey, scrollToBottom])
 
   return { containerRef, handleScroll, scrollToBottom }

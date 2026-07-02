@@ -86,7 +86,6 @@ export function ChatPanel({
               provider: selection.provider,
               model: selection.model,
               temperature: generation.temperature,
-              maxOutputTokens: generation.maxOutputTokens,
               id,
               messages,
               trigger,

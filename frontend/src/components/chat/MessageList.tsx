@@ -4,14 +4,19 @@ import { Bot, Loader2, UserRound } from 'lucide-react'
 import { MarkdownContent } from '@/components/chat/MarkdownContent'
 import { SourceCitations } from '@/components/chat/SourceCitations'
 import { StarterPrompts } from '@/components/chat/StarterPrompts'
+import { TurnActivityStepper } from '@/components/chat/TurnActivityStepper'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useStickToBottom } from '@/hooks/useStickToBottom'
 import {
+  compactActivitySteps,
   dedupeMessagesById,
+  hasActivityHistory,
+  messageActivitySteps,
   messageCitations,
   messageProgress,
   messageSourcePassages,
   messageText,
+  shouldShowActivityTimeline,
   shouldShowMessageProgress,
 } from '@/lib/chat'
 
@@ -33,7 +38,16 @@ export function MessageList({
   const visibleMessages = dedupeMessagesById(messages)
   const lastMessage = visibleMessages[visibleMessages.length - 1]
   const lastMessageText = lastMessage ? messageText(lastMessage) : ''
-  const scrollKey = `${visibleMessages.length}:${lastMessageText.length}:${streaming}`
+  const lastActivitySteps = lastMessage ? messageActivitySteps(lastMessage) : []
+  const lastRunningStep = lastActivitySteps.find((step) => step.status === 'running')
+  const scrollKey = [
+    visibleMessages.length,
+    lastMessageText.length,
+    lastActivitySteps.length,
+    lastRunningStep?.label ?? '',
+    lastRunningStep?.detail ?? '',
+    streaming,
+  ].join(':')
 
   const { containerRef, handleScroll } = useStickToBottom(scrollKey)
 
@@ -83,21 +97,32 @@ export function MessageList({
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto p-6"
+      className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto p-6"
     >
       {visibleMessages.map((message) => {
         const isUser = message.role === 'user'
         const text = messageText(message)
         const progress = messageProgress(message)
+        const activitySteps = messageActivitySteps(message)
+        const activityView = compactActivitySteps(activitySteps)
         const citations = messageCitations(message)
         const passages = messageSourcePassages(message)
         const Icon = isUser ? UserRound : Bot
         const isActiveAssistantMessage =
           !isUser && streaming && message.id === lastMessage?.id
+        const showLiveActivity = shouldShowActivityTimeline(message, {
+          streaming,
+          isActiveAssistantMessage,
+        })
         const showProgress = shouldShowMessageProgress(message, {
           streaming,
           isActiveAssistantMessage,
         })
+        const showPersistedActivity =
+          !isUser &&
+          !showLiveActivity &&
+          hasActivityHistory(message) &&
+          text.length > 0
 
         return (
           <div
@@ -124,7 +149,15 @@ export function MessageList({
               <p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
                 {isUser ? 'You' : 'SourceSight'}
               </p>
-              {showProgress ? (
+              {showLiveActivity ? (
+                <TurnActivityStepper
+                  steps={activitySteps}
+                  grouped={activityView.grouped}
+                  hiddenCount={activityView.hiddenCount}
+                  running={activityView.running}
+                  stickyActive
+                />
+              ) : showProgress ? (
                 <div className="text-muted-foreground flex items-center gap-2">
                   <Loader2 className="size-4 shrink-0 animate-spin" strokeWidth={2} />
                   <span>{progress?.label}</span>
@@ -141,7 +174,18 @@ export function MessageList({
                   <span>Preparing answer…</span>
                 </div>
               ) : null}
-              {!isUser && !showProgress && (
+              {showPersistedActivity ? (
+                <details className="border-border/60 mt-3 border-t pt-3">
+                  <summary className="text-muted-foreground cursor-pointer text-xs font-medium tracking-wide uppercase">
+                    Research steps
+                  </summary>
+                  <TurnActivityStepper
+                    steps={activitySteps}
+                    className="mt-3"
+                  />
+                </details>
+              ) : null}
+              {!isUser && !showProgress && !showLiveActivity && (
                 <SourceCitations citations={citations} passages={passages} />
               )}
             </div>

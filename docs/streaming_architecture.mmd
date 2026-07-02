@@ -1,0 +1,19 @@
+sequenceDiagram
+  participant UI as Frontend
+  participant SSE as /chat/stream
+  participant Orch as Orchestrator
+  participant Agent as PydanticAI Agent
+  participant Ret as RecordingRetriever
+
+  UI->>SSE: POST message
+  SSE->>Orch: start stream
+  Orch->>Agent: run(event_stream_handler)
+  Agent-->>Orch: PartStart/ToolCall/ToolResult events
+  Orch->>SSE: data-activity + data-progress
+  Agent->>Ret: search_filings / read_chunk
+  Ret-->>Orch: activity updates (phase=update)
+  Orch->>SSE: data-activity updates
+  Agent-->>Orch: GroundedAnswer
+  Orch->>SSE: validate + save steps
+  Orch->>SSE: final text + citations
+  SSE->>UI: TurnActivityStepper → answer

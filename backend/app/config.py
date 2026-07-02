@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     # OpenAI (LLM + embeddings when provider=openai)
     openai_api_key: str
+    openai_chat_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
 
     # Embeddings (provider-agnostic)

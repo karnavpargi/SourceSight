@@ -10,15 +10,17 @@ import {
   ThreadSidebar,
   ThreadSidebarContent,
 } from '@/components/chat/ThreadSidebar'
+import { CorpusStatusBanner } from '@/components/CorpusStatusBanner'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, type ThreadSummary } from '@/lib/api'
+import { api, type CorpusStatus, type ThreadSummary } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { toUIMessage } from '@/lib/chat'
 import { stashPendingPrompt } from '@/lib/chat-prompts'
 import { DEFAULT_THREAD_TITLE } from '@/lib/chat-threads'
 import { ApiError, isNetworkError } from '@/lib/http'
+import { registerSessionExpiredHandler } from '@/lib/session-expired'
 
 function formatError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -49,6 +51,7 @@ export function Chat() {
   const [initialMessages, setInitialMessages] = useState<UIMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(Boolean(threadId))
   const [messagesError, setMessagesError] = useState<string | null>(null)
+  const [corpusStatus, setCorpusStatus] = useState<CorpusStatus | null>(null)
 
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === threadId) ?? null,
@@ -85,6 +88,37 @@ export function Chat() {
       } finally {
         if (active) {
           setThreadsLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    return registerSessionExpiredHandler(() => {
+      void (async () => {
+        await signOut()
+        toast.error('Your session expired. Please sign in again.')
+        navigate('/sign-in', { replace: true })
+      })()
+    })
+  }, [navigate, signOut])
+
+  useEffect(() => {
+    let active = true
+
+    void (async () => {
+      try {
+        const status = await api.getCorpusStatus()
+        if (active) {
+          setCorpusStatus(status)
+        }
+      } catch {
+        if (active) {
+          setCorpusStatus(null)
         }
       }
     })()
@@ -153,6 +187,33 @@ export function Chat() {
     navigate(`/chat/${id}`)
   }
 
+  async function handleRenameThread(threadId: string, title: string) {
+    try {
+      const updated = await api.updateThread(threadId, { title })
+      setThreads((current) =>
+        current.map((thread) => (thread.id === updated.id ? updated : thread)),
+      )
+      toast.success('Thread renamed')
+    } catch (error) {
+      toast.error(formatError(error))
+    }
+  }
+
+  async function handleDeleteThread(deletedThreadId: string) {
+    try {
+      await api.deleteThread(deletedThreadId)
+      setThreads((current) =>
+        current.filter((thread) => thread.id !== deletedThreadId),
+      )
+      if (deletedThreadId === threadId) {
+        navigate('/chat')
+      }
+      toast.success('Thread deleted')
+    } catch (error) {
+      toast.error(formatError(error))
+    }
+  }
+
   const sidebarProps = {
     threads,
     activeThreadId: threadId ?? null,
@@ -161,6 +222,8 @@ export function Chat() {
     error: threadsError,
     onSelectThread: handleSelectThread,
     onCreateThread: () => void handleCreateThread(),
+    onRenameThread: (id: string, title: string) => void handleRenameThread(id, title),
+    onDeleteThread: (id: string) => void handleDeleteThread(id),
     onSignOut: async () => {
       await signOut()
       navigate('/sign-in', { replace: true })
@@ -181,6 +244,7 @@ export function Chat() {
       </Sheet>
 
       <main className="flex min-w-0 flex-1 flex-col">
+        <CorpusStatusBanner status={corpusStatus} />
         {!threadId ? (
           <>
             <div className="border-border/60 glass-panel flex items-center gap-3 border-b px-4 py-3 md:hidden">

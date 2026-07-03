@@ -7,6 +7,7 @@ import { normalizePassageMarkdown } from '@/lib/passage-text'
 interface SourceCitationsProps {
   citations: CitationData[]
   passages: SourcePassageData[]
+  onCitationClick?: (citationIndex: number) => void
 }
 
 const filingDateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -15,7 +16,11 @@ const filingDateFormatter = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
 })
 
-export function SourceCitations({ citations, passages }: SourceCitationsProps) {
+export function SourceCitations({
+  citations,
+  passages,
+  onCitationClick,
+}: SourceCitationsProps) {
   if (citations.length === 0) {
     return null
   }
@@ -31,9 +36,11 @@ export function SourceCitations({ citations, passages }: SourceCitationsProps) {
         const passage = passageByChunkId.get(citation.chunk_id)
 
         return (
-          <article
+          <button
             key={`${citation.citation_index}-${citation.chunk_id}`}
-            className="border-primary/20 bg-primary/5 rounded-xl border p-3"
+            type="button"
+            className="border-primary/20 bg-primary/5 hover:bg-primary/10 w-full cursor-pointer rounded-xl border p-3 text-left transition-colors duration-200"
+            onClick={() => onCitationClick?.(citation.citation_index)}
           >
             <div className="flex items-start gap-3">
               <div className="bg-primary/10 text-primary flex size-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold">
@@ -61,36 +68,20 @@ export function SourceCitations({ citations, passages }: SourceCitationsProps) {
                 </blockquote>
 
                 {passage && (
-                  <details className="text-xs">
-                    <summary className="text-primary cursor-pointer font-medium">
-                      View full passage
-                    </summary>
-                    <div className="text-muted-foreground mt-2 leading-relaxed [&_table]:text-[11px]">
-                      <MarkdownContent
-                        content={normalizePassageMarkdown(passage.content)}
-                      />
-                    </div>
-                    <div className="text-muted-foreground mt-2 flex flex-wrap items-center gap-3">
-                      <span className="inline-flex items-center gap-1">
-                        <FileText className="size-3.5" strokeWidth={2} />
-                        Filed {formatFilingDate(passage.filing_date)}
-                      </span>
-                      <a
-                        href={passage.source_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        aria-label={`Open ${passage.ticker} filing in a new tab`}
-                        className="text-primary inline-flex items-center gap-1 hover:underline"
-                      >
-                        Open filing
-                        <ExternalLink className="size-3.5" strokeWidth={2} />
-                      </a>
-                    </div>
-                  </details>
+                  <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
+                    <span className="inline-flex items-center gap-1">
+                      <FileText className="size-3.5" strokeWidth={2} />
+                      Filed {formatFilingDate(passage.filing_date)}
+                    </span>
+                    <span className="text-primary inline-flex items-center gap-1 font-medium">
+                      View source
+                      <ExternalLink className="size-3.5" strokeWidth={2} />
+                    </span>
+                  </div>
                 )}
               </div>
             </div>
-          </article>
+          </button>
         )
       })}
     </div>

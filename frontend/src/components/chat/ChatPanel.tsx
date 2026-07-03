@@ -98,7 +98,7 @@ export function ChatPanel({
   )
   /* eslint-enable react-hooks/refs */
 
-  const { messages, sendMessage, status, error } = useChat({
+  const { messages, sendMessage, status, error, stop } = useChat({
     id: threadId,
     messages: initialMessages,
     transport,
@@ -207,6 +207,7 @@ export function ChatPanel({
         busy={streaming}
         disabledHint={disabledHint}
         onChange={setInput}
+        onStop={streaming ? stop : undefined}
         leadingSlot={
           <ChatSettingsMenu
             modelSelection={modelSelection}

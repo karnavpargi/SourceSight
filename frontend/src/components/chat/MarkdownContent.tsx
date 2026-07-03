@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 
 interface MarkdownContentProps {
   content: string
+  onCitationClick?: (citationIndex: number) => void
 }
 
 type Block =
@@ -162,7 +163,11 @@ function parseTextSegment(segment: string, blocks: Block[]): void {
   }
 }
 
-function renderInline(text: string, keyPrefix: string): ReactNode[] {
+function renderInline(
+  text: string,
+  keyPrefix: string,
+  onCitationClick?: (citationIndex: number) => void,
+): ReactNode[] {
   return tokenizeInline(text).map((token, index) => {
     const key = `${keyPrefix}-${index}`
 
@@ -170,9 +175,17 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       case 'text':
         return token.value
       case 'bold':
-        return <strong key={key}>{renderInline(token.value, `${key}-b`)}</strong>
+        return (
+          <strong key={key}>
+            {renderInline(token.value, `${key}-b`, onCitationClick)}
+          </strong>
+        )
       case 'italic':
-        return <em key={key}>{renderInline(token.value, `${key}-i`)}</em>
+        return (
+          <em key={key}>
+            {renderInline(token.value, `${key}-i`, onCitationClick)}
+          </em>
+        )
       case 'code':
         return (
           <code
@@ -194,6 +207,18 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
             {token.label}
           </a>
         )
+      case 'citation':
+        return (
+          <button
+            key={key}
+            type="button"
+            className="text-primary hover:bg-primary/10 mx-0.5 inline-flex cursor-pointer items-center rounded px-1 font-medium underline underline-offset-2 transition-colors duration-200"
+            aria-label={`Open source citation ${token.index}`}
+            onClick={() => onCitationClick?.(token.index)}
+          >
+            [{token.index}]
+          </button>
+        )
       default: {
         const _exhaustive: never = token
         return _exhaustive
@@ -208,6 +233,7 @@ type InlineToken =
   | { type: 'italic'; value: string }
   | { type: 'code'; value: string }
   | { type: 'link'; label: string; href: string }
+  | { type: 'citation'; index: number }
 
 function tokenizeInline(text: string): InlineToken[] {
   const tokens: InlineToken[] = []
@@ -215,10 +241,20 @@ function tokenizeInline(text: string): InlineToken[] {
 
   while (cursor < text.length) {
     const slice = text.slice(cursor)
+    const citationMatch = slice.match(/^\[(\d+)\]/)
     const linkMatch = slice.match(/^\[([^\]]+)\]\(([^)]+)\)/)
     const codeMatch = slice.match(/^`([^`]+)`/)
     const boldMatch = slice.match(/^\*\*([^*]+)\*\*/)
     const italicMatch = slice.match(/^(?<!\*)\*([^*]+)\*(?!\*)/)
+
+    if (citationMatch) {
+      tokens.push({
+        type: 'citation',
+        index: Number(citationMatch[1]),
+      })
+      cursor += citationMatch[0].length
+      continue
+    }
 
     if (linkMatch) {
       tokens.push({
@@ -248,7 +284,7 @@ function tokenizeInline(text: string): InlineToken[] {
       continue
     }
 
-    const nextSpecial = slice.slice(1).search(/[[*`]/)
+    const nextSpecial = slice.slice(1).search(/[[*`\d]/)
     const end =
       nextSpecial === -1 ? text.length : cursor + 1 + nextSpecial
     tokens.push({ type: 'text', value: text.slice(cursor, end) })
@@ -273,8 +309,10 @@ function mergeTextTokens(tokens: InlineToken[]): InlineToken[] {
   return merged
 }
 
-export function MarkdownContent({ content }: MarkdownContentProps) {
+export function MarkdownContent({ content, onCitationClick }: MarkdownContentProps) {
   const blocks = parseBlocks(content)
+  const render = (text: string, prefix: string) =>
+    renderInline(text, prefix, onCitationClick)
 
   return (
     <div className="space-y-3 break-words">
@@ -291,14 +329,14 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
                   : 'text-sm font-medium'
             return (
               <p key={key} className={className}>
-                {renderInline(block.text, key)}
+                {render(block.text, key)}
               </p>
             )
           }
           case 'paragraph':
             return (
               <p key={key} className="whitespace-pre-wrap">
-                {renderInline(block.text, key)}
+                {render(block.text, key)}
               </p>
             )
           case 'ul':
@@ -306,7 +344,7 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
               <ul key={key} className="list-disc space-y-1 pl-5">
                 {block.items.map((item, itemIndex) => (
                   <li key={`${key}-${itemIndex}`}>
-                    {renderInline(item, `${key}-${itemIndex}`)}
+                    {render(item, `${key}-${itemIndex}`)}
                   </li>
                 ))}
               </ul>
@@ -316,7 +354,7 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
               <ol key={key} className="list-decimal space-y-1 pl-5">
                 {block.items.map((item, itemIndex) => (
                   <li key={`${key}-${itemIndex}`}>
-                    {renderInline(item, `${key}-${itemIndex}`)}
+                    {render(item, `${key}-${itemIndex}`)}
                   </li>
                 ))}
               </ol>
@@ -341,7 +379,7 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
                           key={`${key}-h-${headerIndex}`}
                           className="text-muted-foreground px-3 py-2 text-left font-medium whitespace-nowrap"
                         >
-                          {renderInline(header, `${key}-h-${headerIndex}`)}
+                          {render(header, `${key}-h-${headerIndex}`)}
                         </th>
                       ))}
                     </tr>
@@ -361,7 +399,7 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
                                 : 'whitespace-nowrap tabular-nums'
                             }`}
                           >
-                            {renderInline(
+                            {render(
                               row[cellIndex] ?? '',
                               `${key}-r-${rowIndex}-c-${cellIndex}`,
                             )}

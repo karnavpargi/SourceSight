@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Toaster } from '@/components/ui/sonner'
 import { useAuth } from '@/lib/auth'
@@ -44,7 +45,7 @@ function PublicOnly({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <>
+    <ErrorBoundary>
       <Routes>
         <Route
           path="/sign-in"
@@ -65,6 +66,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/chat" replace />} />
       </Routes>
       <Toaster richColors closeButton />
-    </>
+    </ErrorBoundary>
   )
 }

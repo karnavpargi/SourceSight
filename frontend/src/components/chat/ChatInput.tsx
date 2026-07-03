@@ -8,7 +8,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
-import { Loader2, SendHorizontal } from 'lucide-react'
+import { Loader2, SendHorizontal, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,6 +25,7 @@ interface ChatInputProps {
   disabledHint?: string | null
   onChange: (value: string) => void
   onSubmit: () => void
+  onStop?: () => void
   leadingSlot?: ReactNode
 }
 
@@ -35,6 +36,7 @@ export function ChatInput({
   disabledHint = null,
   onChange,
   onSubmit,
+  onStop,
   leadingSlot,
 }: ChatInputProps) {
   const listboxId = useId()
@@ -196,6 +198,18 @@ export function ChatInput({
               </ul>
             )}
           </div>
+          {busy && onStop ? (
+            <Button
+              type="button"
+              variant="outline"
+              aria-label="Stop generating"
+              className="h-11 min-w-11 shrink-0 cursor-pointer px-4 transition-colors duration-200"
+              onClick={onStop}
+            >
+              <Square className="size-4 fill-current" strokeWidth={2} />
+              <span className="hidden sm:inline">Stop</span>
+            </Button>
+          ) : null}
           <Button
             type="submit"
             disabled={!canSubmit}

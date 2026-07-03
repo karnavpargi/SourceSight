@@ -22,7 +22,7 @@ from app.chat.orchestrator import (
     model_unavailable_message,
     run_chat_turn,
 )
-from app.grounding.validator import GroundingError
+from app.grounding.validator import GroundingError, grounding_validator
 from app.database.chats import ChatMessageRecord
 from app.retrieval.types import RetrievalResult, SourcePassage
 
@@ -79,12 +79,14 @@ class StubRetriever:
 class RecordingValidator:
     should_fail: bool = False
     received_passages: list[SourcePassage] | None = None
+    validate_called: bool = False
 
     def validate(
         self,
         answer: GroundedAnswer,
         retrieved_passages: list[SourcePassage],
     ) -> None:
+        self.validate_called = True
         self.received_passages = retrieved_passages
         if self.should_fail:
             raise GroundingError("ungrounded answer")
@@ -224,10 +226,7 @@ async def test_run_chat_turn_emits_progress_before_answer() -> None:
     ), patch(
         "app.chat.orchestrator.chat_store.title_thread_from_first_message",
         new=AsyncMock(),
-    ), patch("app.chat.orchestrator.validate") as validate_grounding, patch(
-        "app.chat.orchestrator._run_agent",
-        side_effect=_fake_run_agent,
-    ):
+    ), patch("app.chat.orchestrator._run_agent", side_effect=_fake_run_agent):
         response = await run_chat_turn(
             client,
             user_id=USER_ID,
@@ -247,7 +246,7 @@ async def test_run_chat_turn_emits_progress_before_answer() -> None:
     assert "save" in _activity_kinds(body)
     assert _event_types(body).index("start") < _event_types(body).index("text-delta")
     assert "data: [DONE]" in body
-    validate_grounding.assert_called_once()
+    assert validator.validate_called is True
     assert append.await_count == 2
     roles = [call.kwargs["role"] for call in append.await_args_list]
     assert roles == ["user", "assistant"]
@@ -294,6 +293,29 @@ async def test_run_chat_turn_titles_thread_from_first_message() -> None:
     del response
 
 
+async def _fake_run_agent_ungrounded(
+    user_text: str,
+    *,
+    user_id: UUID,
+    thread_id: UUID,
+    chat_model: ResolvedChatModel,
+    generation: ChatGenerationConfig,
+    grounding_validator,
+    activity=None,
+    retriever=None,
+) -> tuple[GroundedAnswer, list[SourcePassage]]:
+    if activity is not None:
+        activity.start_thinking(f"Thinking with {chat_model.model}...")
+    if retriever is not None:
+        retriever.search_filings(user_text)
+    if activity is not None:
+        activity.end_thinking()
+    return (
+        GroundedAnswer(answer="AWS operating income rose sharply without evidence."),
+        [_passage()],
+    )
+
+
 @pytest.mark.anyio
 async def test_run_chat_turn_refuses_on_grounding_failure() -> None:
     retriever = StubRetriever(passages=[_passage()])
@@ -302,15 +324,16 @@ async def test_run_chat_turn_refuses_on_grounding_failure() -> None:
 
     append = AsyncMock(return_value=_appended_message())
     attach = AsyncMock(return_value=[])
+    update_message_data = AsyncMock(return_value=_appended_message())
 
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
         "app.chat.orchestrator.chat_store.attach_citations", new=attach
     ), patch(
+        "app.chat.orchestrator.chat_store.update_message_data",
+        new=update_message_data,
+    ), patch(
         "app.chat.orchestrator.chat_store.title_thread_from_first_message",
         new=AsyncMock(),
-    ), patch(
-        "app.chat.orchestrator.validate",
-        side_effect=GroundingError("ungrounded answer"),
     ), patch(
         "app.chat.orchestrator._run_agent",
         side_effect=_fake_run_agent,
@@ -329,10 +352,56 @@ async def test_run_chat_turn_refuses_on_grounding_failure() -> None:
         body = await _collect(response)
 
     assert _assembled_text(body) == REFUSAL_MESSAGE
+    assert "AWS operating income rose" not in body
     assert "[1]" not in body
+    assert "data-citation" not in _event_types(body)
+    assert "save" not in _activity_kinds(body)
     contents = [call.kwargs["content"] for call in append.await_args_list]
     assert contents == ["How did AWS operating income change?", REFUSAL_MESSAGE]
     attach.assert_not_awaited()
+    update_message_data.assert_not_awaited()
+    assert validator.validate_called is True
+
+
+@pytest.mark.anyio
+async def test_run_chat_turn_refuses_ungrounded_model_answer() -> None:
+    retriever = StubRetriever(passages=[_passage()])
+    client = object()
+
+    append = AsyncMock(return_value=_appended_message())
+    attach = AsyncMock(return_value=[])
+    update_message_data = AsyncMock(return_value=_appended_message())
+
+    with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
+        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+    ), patch(
+        "app.chat.orchestrator.chat_store.update_message_data",
+        new=update_message_data,
+    ), patch(
+        "app.chat.orchestrator.chat_store.title_thread_from_first_message",
+        new=AsyncMock(),
+    ), patch(
+        "app.chat.orchestrator._run_agent",
+        side_effect=_fake_run_agent_ungrounded,
+    ):
+        response = await run_chat_turn(
+            client,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            user_text="How did AWS operating income change?",
+            user_message_data=None,
+            retriever=retriever,
+            grounding_validator=grounding_validator,
+            chat_model=TEST_CHAT_MODEL,
+            generation=TEST_GENERATION,
+        )
+        body = await _collect(response)
+
+    assert _assembled_text(body) == REFUSAL_MESSAGE
+    assert "without evidence" not in body
+    assert "data-citation" not in _event_types(body)
+    attach.assert_not_awaited()
+    update_message_data.assert_not_awaited()
 
 
 @pytest.mark.anyio

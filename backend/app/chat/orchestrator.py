@@ -47,7 +47,7 @@ from app.chat.thread_titles import DEFAULT_THREAD_TITLE, derive_thread_title
 from app.database import chats as chat_store
 from app.database.chats import AttachCitationInput
 from app.database.session import session_scope
-from app.grounding.validator import GroundingError, validate
+from app.grounding.validator import GroundingError
 from app.retrieval.chunk_lookup import chunk_not_found_retry
 from app.retrieval.document_retriever import SessionPerCallDocumentRetriever
 from app.retrieval.retriever import _load_neighbor_passages
@@ -346,7 +346,7 @@ async def _stream_chat_turn(
     await asyncio.sleep(0)
 
     try:
-        validate(answer, retrieved_passages)
+        grounding_validator.validate(answer, retrieved_passages)
     except GroundingError:
         activity.end(validate_id, kind="validate", label="Validation failed")
         for event in emit_activity_updates():

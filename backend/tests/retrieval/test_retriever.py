@@ -10,7 +10,13 @@ from app.database.document_chunk import DocumentChunk
 from app.database.source_document import SourceDocument
 from app.retrieval.fusion import FusedChunkHit
 from app.retrieval.queries import RankedChunkHit
-from app.retrieval.retriever import retrieve_passages
+from app.retrieval.retriever import (
+    _default_embed_query,
+    _load_chunks,
+    _load_neighbor_passages,
+    _to_source_passage,
+    retrieve_passages,
+)
 from app.retrieval.types import SourcePassage
 
 
@@ -186,3 +192,154 @@ def test_retrieve_passages_preserves_fused_ranking() -> None:
         )
 
     assert [passage.chunk_id for passage in result.passages] == [chunk_b.id, chunk_a.id]
+
+
+def test_retrieve_passages_returns_empty_when_fusion_finds_nothing() -> None:
+    session = MagicMock()
+
+    with patch("app.retrieval.retriever.search_chunks_by_embedding", return_value=[]), patch(
+        "app.retrieval.retriever.search_chunks_by_full_text", return_value=[]
+    ), patch("app.retrieval.retriever.reciprocal_rank_fusion", return_value=[]):
+        result = retrieve_passages(
+            session,
+            "Amazon AWS",
+            embed_query=lambda _query: [0.0] * 768,
+        )
+
+    assert result.query == "Amazon AWS"
+    assert result.passages == []
+    session.execute.assert_not_called()
+
+
+def test_retrieve_passages_uses_default_embed_query() -> None:
+    session = MagicMock()
+
+    with patch("app.retrieval.retriever.search_chunks_by_embedding", return_value=[]), patch(
+        "app.retrieval.retriever.search_chunks_by_full_text", return_value=[]
+    ), patch("app.retrieval.retriever.reciprocal_rank_fusion", return_value=[]), patch(
+        "app.retrieval.retriever.embed_texts",
+        return_value=[[0.5] * 768],
+    ) as embed_texts:
+        retrieve_passages(session, "Amazon AWS")
+
+    embed_texts.assert_called_once_with(["Amazon AWS"])
+
+
+def test_default_embed_query_delegates_to_embed_texts() -> None:
+    with patch("app.retrieval.retriever.embed_texts", return_value=[[0.1, 0.2]]) as embed_texts:
+        assert _default_embed_query("aws revenue") == [0.1, 0.2]
+    embed_texts.assert_called_once_with(["aws revenue"])
+
+
+def test_load_chunks_returns_empty_for_no_ids() -> None:
+    session = MagicMock()
+    assert _load_chunks(session, []) == {}
+    session.execute.assert_not_called()
+
+
+def test_load_neighbor_passages_returns_empty_for_zero_window() -> None:
+    session = MagicMock()
+    document = _make_document()
+    chunk = _make_chunk(
+        chunk_id=uuid.uuid4(),
+        document=document,
+        chunk_index=3,
+        content="Primary passage.",
+    )
+    passage = _to_source_passage(chunk, score=0.5)
+
+    neighbors = _load_neighbor_passages(
+        session,
+        [passage],
+        neighbor_window=0,
+        existing_chunk_ids={chunk.id},
+    )
+
+    assert neighbors == []
+    session.execute.assert_not_called()
+
+
+def test_load_neighbor_passages_skips_existing_and_out_of_spec_chunks() -> None:
+    session = MagicMock()
+    document = _make_document()
+    primary = _make_chunk(
+        chunk_id=uuid.uuid4(),
+        document=document,
+        chunk_index=3,
+        content="Primary passage.",
+    )
+    existing_neighbor = _make_chunk(
+        chunk_id=uuid.uuid4(),
+        document=document,
+        chunk_index=2,
+        content="Already loaded.",
+    )
+    matching_neighbor = _make_chunk(
+        chunk_id=uuid.uuid4(),
+        document=document,
+        chunk_index=4,
+        content="Neighbor passage.",
+    )
+    out_of_spec = _make_chunk(
+        chunk_id=uuid.uuid4(),
+        document=document,
+        chunk_index=99,
+        content="Unrelated chunk.",
+    )
+
+    result = MagicMock()
+    scalars = MagicMock()
+    scalars.all.return_value = [existing_neighbor, matching_neighbor, out_of_spec]
+    result.scalars.return_value = scalars
+    session.execute.return_value = result
+
+    passage = _to_source_passage(primary, score=0.5)
+    neighbors = _load_neighbor_passages(
+        session,
+        [passage],
+        neighbor_window=1,
+        existing_chunk_ids={primary.id, existing_neighbor.id},
+    )
+
+    assert len(neighbors) == 1
+    assert neighbors[0].chunk_id == matching_neighbor.id
+    assert neighbors[0].is_neighbor is True
+
+
+def test_to_source_passage_raises_when_document_missing() -> None:
+    chunk = _make_chunk(
+        chunk_id=uuid.uuid4(),
+        document=_make_document(),
+        chunk_index=1,
+        content="Orphan chunk.",
+    )
+    chunk.document = None
+
+    with pytest.raises(ValueError, match="missing its source document"):
+        _to_source_passage(chunk, score=0.0)
+
+
+def test_retrieve_passages_skips_missing_chunk_ids_from_database() -> None:
+    session = MagicMock()
+    missing_id = uuid.uuid4()
+    fused_hits = [FusedChunkHit(chunk_id=missing_id, score=0.03)]
+
+    def fake_execute(_statement):
+        result = MagicMock()
+        scalars = MagicMock()
+        scalars.all.return_value = []
+        result.scalars.return_value = scalars
+        return result
+
+    session.execute.side_effect = fake_execute
+
+    with patch("app.retrieval.retriever.search_chunks_by_embedding", return_value=[]), patch(
+        "app.retrieval.retriever.search_chunks_by_full_text", return_value=[]
+    ), patch("app.retrieval.retriever.reciprocal_rank_fusion", return_value=fused_hits):
+        result = retrieve_passages(
+            session,
+            "missing chunk",
+            embed_query=lambda _query: [0.0] * 768,
+        )
+
+    assert result.passages == []

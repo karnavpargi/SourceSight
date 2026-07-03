@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 
 from app.assistant.outputs import Citation, GroundedAnswer
-from app.grounding.validator import GroundingError, validate
+from app.grounding.validator import GroundingError, GroundingValidatorService, validate
 from app.retrieval.types import SourcePassage
 
 CHUNK_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -138,3 +138,32 @@ def test_validate_rejects_citation_to_unretrieved_chunk() -> None:
     )
     with pytest.raises(GroundingError, match="was not retrieved"):
         validate(answer, [_passage()])
+
+
+def test_validate_allows_answer_with_blank_lines_between_claims() -> None:
+    answer = GroundedAnswer(
+        answer="   \nAWS operating income rose [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="AWS operating income increased.",
+            )
+        ],
+    )
+    validate(answer, [_passage()])
+
+
+def test_grounding_validator_service_delegates_to_validate() -> None:
+    service = GroundingValidatorService()
+    answer = GroundedAnswer(
+        answer="AWS operating income rose [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="AWS operating income increased.",
+            )
+        ],
+    )
+    service.validate(answer, [_passage()])

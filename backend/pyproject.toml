@@ -35,6 +35,8 @@ pythonpath = ["."]
 markers = [
     "integration: tests that require live external services",
 ]
+# Trust-critical coverage gate (Phase 7): grounding + retrieval at 100%
+# uv run pytest -m "not integration" --cov=app.grounding --cov=app.retrieval --cov-report=term-missing --cov-fail-under=100
 
 [tool.coverage.run]
 branch = true

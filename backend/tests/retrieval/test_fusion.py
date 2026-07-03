@@ -74,5 +74,11 @@ def test_reciprocal_rank_fusion_rejects_non_positive_k() -> None:
         reciprocal_rank_fusion([uuid.uuid4()], k=0)
 
 
+def test_reciprocal_rank_fusion_skips_empty_ranked_lists() -> None:
+    doc_id = uuid.uuid4()
+    fused = reciprocal_rank_fusion([doc_id], [])
+    assert fused == [FusedChunkHit(chunk_id=doc_id, score=pytest.approx(1.0 / 61.0))]
+
+
 def test_default_rrf_k_is_sixty() -> None:
     assert DEFAULT_RRF_K == 60

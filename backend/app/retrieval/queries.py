@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database.document_chunk import DocumentChunk
+from app.database.source_document import SourceDocument
+from app.retrieval.fts_query import fts_query_variants
 
 DEFAULT_SEARCH_LIMIT = 20
 
@@ -62,7 +64,26 @@ def search_chunks_by_full_text(
     if not normalized_query:
         return []
 
-    ts_query = func.websearch_to_tsquery("english", normalized_query)
+    for fts_query, tickers in fts_query_variants(normalized_query):
+        hits = _full_text_search(
+            session,
+            fts_query,
+            tickers=tickers,
+            limit=limit,
+        )
+        if hits:
+            return hits
+    return []
+
+
+def _full_text_search(
+    session: Session,
+    fts_query: str,
+    *,
+    tickers: list[str],
+    limit: int,
+) -> list[RankedChunkHit]:
+    ts_query = func.websearch_to_tsquery("english", fts_query)
     rank = func.ts_rank_cd(DocumentChunk.search_vector, ts_query)
     statement = (
         select(
@@ -73,6 +94,11 @@ def search_chunks_by_full_text(
         .order_by(rank.desc(), DocumentChunk.id)
         .limit(limit)
     )
+    if tickers:
+        statement = statement.join(
+            SourceDocument,
+            SourceDocument.id == DocumentChunk.document_id,
+        ).where(SourceDocument.ticker.in_(tickers))
     return _rows_to_hits(session.execute(statement), score_from_distance=False)
 
 

@@ -67,15 +67,25 @@ def test_ollama_missing_embeddings_raises() -> None:
         ollama.embed_texts_ollama(["x"], client=mock_client)
 
 
-def test_ollama_closes_owned_client() -> None:
+def test_ollama_does_not_close_caller_provided_client() -> None:
     mock_response = MagicMock(status_code=200)
     mock_response.json.return_value = {"embeddings": [[0.1]]}
     mock_client = MagicMock()
     mock_client.post.return_value = mock_response
-    with patch("ingest.providers.ollama.httpx.Client", return_value=mock_client):
+    result = ollama.embed_texts_ollama(["x"], client=mock_client)
+    assert result == [[0.1]]
+    mock_client.close.assert_not_called()
+
+
+def test_ollama_does_not_close_shared_client() -> None:
+    mock_response = MagicMock(status_code=200)
+    mock_response.json.return_value = {"embeddings": [[0.1]]}
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_response
+    with patch("ingest.providers.ollama.get_sync_client", return_value=mock_client):
         result = ollama.embed_texts_ollama(["x"])
     assert result == [[0.1]]
-    mock_client.close.assert_called_once()
+    mock_client.close.assert_not_called()
 
 
 def test_ollama_http_status_error_on_final_attempt() -> None:

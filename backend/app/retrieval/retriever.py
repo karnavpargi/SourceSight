@@ -89,9 +89,6 @@ def _vector_search_hits(
     *,
     candidate_limit: int,
 ) -> list[RankedChunkHit]:
-    if not settings.use_ollama:
-        return []
-
     try:
         query_embedding = embed_fn(query)
     except httpx.HTTPError:

@@ -217,7 +217,7 @@ def test_retrieve_passages_returns_empty_when_fusion_finds_nothing() -> None:
     session.execute.assert_not_called()
 
 
-def test_retrieve_passages_skips_vector_search_when_ollama_disabled(
+def test_retrieve_passages_attempts_vector_search_when_ollama_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = MagicMock()
@@ -225,6 +225,7 @@ def test_retrieve_passages_skips_vector_search_when_ollama_disabled(
 
     with patch(
         "app.retrieval.retriever.search_chunks_by_embedding",
+        return_value=[],
     ) as mock_vector, patch(
         "app.retrieval.retriever.search_chunks_by_full_text",
         return_value=[],
@@ -232,10 +233,13 @@ def test_retrieve_passages_skips_vector_search_when_ollama_disabled(
         "app.retrieval.retriever.reciprocal_rank_fusion",
         return_value=[],
     ):
-        result = retrieve_passages(session, "AWS operating income")
+        retrieve_passages(
+            session,
+            "AWS operating income",
+            embed_query=lambda _query: [0.1] * 768,
+        )
 
-    mock_vector.assert_not_called()
-    assert result.passages == []
+    mock_vector.assert_called_once()
 
 
 def test_retrieve_passages_falls_back_to_full_text_when_embedding_unavailable(

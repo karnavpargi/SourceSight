@@ -33,6 +33,28 @@ def test_validate_allows_refusal_without_citations() -> None:
     validate(answer, [])
 
 
+def test_validate_allows_refusal_with_contraction() -> None:
+    answer = GroundedAnswer(
+        answer="This corpus doesn't contain enough evidence to answer that."
+    )
+    validate(answer, [])
+
+
+def test_validate_rejects_refusal_with_citations() -> None:
+    answer = GroundedAnswer(
+        answer="This corpus does not contain enough evidence to answer that.",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="AWS operating income increased.",
+            )
+        ],
+    )
+    with pytest.raises(GroundingError, match="must not include citations"):
+        validate(answer, [_passage()])
+
+
 def test_validate_allows_citations_to_retrieved_chunks() -> None:
     answer = GroundedAnswer(
         answer="AWS operating income rose [1].",
@@ -45,6 +67,62 @@ def test_validate_allows_citations_to_retrieved_chunks() -> None:
         ],
     )
     validate(answer, [_passage()])
+
+
+def test_validate_rejects_grounded_answer_without_citations() -> None:
+    answer = GroundedAnswer(answer="AWS operating income rose sharply.")
+    with pytest.raises(GroundingError, match="must include at least one citation"):
+        validate(answer, [_passage()])
+
+
+def test_validate_rejects_unresolved_marker_in_answer() -> None:
+    answer = GroundedAnswer(
+        answer="AWS operating income rose [1] and margins improved [2].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="AWS operating income increased.",
+            )
+        ],
+    )
+    with pytest.raises(GroundingError, match="\\[2\\]"):
+        validate(answer, [_passage()])
+
+
+def test_validate_rejects_orphan_citation_record() -> None:
+    answer = GroundedAnswer(
+        answer="AWS operating income rose [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="AWS operating income increased.",
+            ),
+            Citation(
+                citation_index=2,
+                chunk_id=CHUNK_ID,
+                excerpt="Margins improved.",
+            ),
+        ],
+    )
+    with pytest.raises(GroundingError, match="\\[2\\]"):
+        validate(answer, [_passage()])
+
+
+def test_validate_rejects_uncited_factual_segment() -> None:
+    answer = GroundedAnswer(
+        answer="AWS operating income rose sharply. Margins improved [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Margins improved.",
+            )
+        ],
+    )
+    with pytest.raises(GroundingError, match="Uncited segment"):
+        validate(answer, [_passage()])
 
 
 def test_validate_rejects_citation_to_unretrieved_chunk() -> None:

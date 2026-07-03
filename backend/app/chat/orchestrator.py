@@ -10,6 +10,7 @@ session inside the background agent task so streaming stays concurrent-safe.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -48,6 +49,7 @@ from app.database import chats as chat_store
 from app.database.chats import AttachCitationInput
 from app.database.session import session_scope
 from app.grounding.validator import GroundingError
+from app.grounding.repair import repair_grounded_answer
 from app.retrieval.chunk_lookup import chunk_not_found_retry
 from app.retrieval.document_retriever import SessionPerCallDocumentRetriever
 from app.retrieval.retriever import _load_neighbor_passages
@@ -105,6 +107,45 @@ def model_unavailable_message(exc: BaseException, *, provider: ChatProvider) -> 
         )
 
     return MODEL_UNAVAILABLE_MESSAGE
+
+
+def _token_usage_fields(run: object) -> dict[str, int | None]:
+    usage = getattr(run, "usage", None)
+    if callable(usage):
+        usage = usage()
+    if usage is None:
+        return {"input_tokens": None, "output_tokens": None}
+
+    input_tokens = getattr(usage, "input_tokens", None)
+    if input_tokens is None:
+        input_tokens = getattr(usage, "request_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if output_tokens is None:
+        output_tokens = getattr(usage, "response_tokens", None)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
+def _log_turn_complete(
+    *,
+    outcome: str,
+    provider: ChatProvider,
+    model: str,
+    started_at: float,
+    citation_count: int = 0,
+    **extra: object,
+) -> None:
+    logger.info(
+        "chat.turn_complete",
+        outcome=outcome,
+        provider=provider,
+        model=model,
+        latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
+        citation_count=citation_count,
+        **extra,
+    )
 
 
 @dataclass
@@ -241,6 +282,11 @@ async def _stream_chat_turn(
     chat_model: ResolvedChatModel,
     generation: ChatGenerationConfig,
 ) -> AsyncIterator[str]:
+    turn_started = time.perf_counter()
+    structlog.contextvars.bind_contextvars(
+        user_id=str(user_id),
+        thread_id=str(thread_id),
+    )
     message_id = f"msg_{uuid.uuid4().hex}"
     activity = TurnActivityEmitter()
     activity_log: list[TurnActivityData] = []
@@ -315,6 +361,12 @@ async def _stream_chat_turn(
             include_start=False,
         ):
             yield event
+        _log_turn_complete(
+            outcome="model_unavailable",
+            provider=chat_model.provider,
+            model=chat_model.model,
+            started_at=turn_started,
+        )
         return
     except Exception as exc:
         logger.exception(
@@ -338,6 +390,13 @@ async def _stream_chat_turn(
             include_start=False,
         ):
             yield event
+        _log_turn_complete(
+            outcome="turn_failed",
+            provider=chat_model.provider,
+            model=chat_model.model,
+            started_at=turn_started,
+            error_type=type(exc).__name__,
+        )
         return
 
     validate_id = activity.start("validate", "Validating sources...")
@@ -346,8 +405,17 @@ async def _stream_chat_turn(
     await asyncio.sleep(0)
 
     try:
+        answer = repair_grounded_answer(answer, retrieved_passages)
         grounding_validator.validate(answer, retrieved_passages)
-    except GroundingError:
+    except GroundingError as exc:
+        logger.warning(
+            "chat.grounding_failed",
+            reason=str(exc),
+            retrieved_passage_count=len(retrieved_passages),
+            citation_count=len(answer.citations),
+            provider=chat_model.provider,
+            model=chat_model.model,
+        )
         activity.end(validate_id, kind="validate", label="Validation failed")
         for event in emit_activity_updates():
             yield event
@@ -367,6 +435,12 @@ async def _stream_chat_turn(
             include_start=False,
         ):
             yield event
+        _log_turn_complete(
+            outcome="grounding_refusal",
+            provider=chat_model.provider,
+            model=chat_model.model,
+            started_at=turn_started,
+        )
         return
 
     activity.end(validate_id, kind="validate", label="Sources validated")
@@ -393,6 +467,14 @@ async def _stream_chat_turn(
         include_start=False,
     ):
         yield event
+
+    _log_turn_complete(
+        outcome="answered",
+        provider=chat_model.provider,
+        model=chat_model.model,
+        started_at=turn_started,
+        citation_count=len(answer.citations),
+    )
 
 
 async def _run_agent(
@@ -467,6 +549,13 @@ async def _run_agent_with_retriever(
         )
     if activity is not None:
         activity.end_thinking()
+    logger.info(
+        "chat.agent_complete",
+        provider=chat_model.provider,
+        model=chat_model.model,
+        retrieved_passage_count=len(recording_retriever.retrieved_passages),
+        **_token_usage_fields(run),
+    )
     return run.output, recording_retriever.retrieved_passages
 
 

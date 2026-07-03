@@ -10,6 +10,7 @@ from pathlib import Path
 
 import structlog
 
+from app.config import settings
 from ingest.chunk import chunk_markdown
 from ingest.db import session_scope
 from ingest.embed import embed_texts
@@ -107,7 +108,10 @@ def ingest_filing(
         html_path = downloads_dir / filing.local_path
         markdown = extract_markdown_from_path(html_path)
         chunks = chunk_markdown(markdown)
-        embeddings = embed_texts([chunk.content for chunk in chunks])
+        if settings.use_ollama:
+            embeddings = embed_texts([chunk.content for chunk in chunks])
+        else:
+            embeddings = [None] * len(chunks)
 
         load_filing(
             session,

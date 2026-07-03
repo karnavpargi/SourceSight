@@ -5,14 +5,18 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 
+import httpx
+import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import settings
 from app.database.document_chunk import DocumentChunk
 from app.database.source_document import SourceDocument
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.queries import (
     DEFAULT_SEARCH_LIMIT,
+    RankedChunkHit,
     search_chunks_by_embedding,
     search_chunks_by_full_text,
 )
@@ -23,6 +27,8 @@ DEFAULT_RETRIEVAL_LIMIT = 10
 DEFAULT_NEIGHBOR_WINDOW = 0
 
 EmbedQueryFn = Callable[[str], list[float]]
+
+logger = structlog.get_logger(__name__)
 
 
 def retrieve_passages(
@@ -40,12 +46,11 @@ def retrieve_passages(
         return RetrievalResult(query=query, passages=[])
 
     embed_fn = embed_query or _default_embed_query
-    query_embedding = embed_fn(normalized_query)
-
-    vector_hits = search_chunks_by_embedding(
+    vector_hits = _vector_search_hits(
         session,
-        query_embedding,
-        limit=candidate_limit,
+        embed_fn,
+        normalized_query,
+        candidate_limit=candidate_limit,
     )
     text_hits = search_chunks_by_full_text(
         session,
@@ -75,6 +80,32 @@ def retrieve_passages(
         passages.extend(neighbor_passages)
 
     return RetrievalResult(query=normalized_query, passages=passages)
+
+
+def _vector_search_hits(
+    session: Session,
+    embed_fn: EmbedQueryFn,
+    query: str,
+    *,
+    candidate_limit: int,
+) -> list[RankedChunkHit]:
+    if not settings.use_ollama:
+        return []
+
+    try:
+        query_embedding = embed_fn(query)
+    except httpx.HTTPError:
+        logger.warning(
+            "retrieval.embedding_unavailable",
+            ollama_base_url=settings.ollama_base_url,
+        )
+        return []
+
+    return search_chunks_by_embedding(
+        session,
+        query_embedding,
+        limit=candidate_limit,
+    )
 
 
 def _default_embed_query(query: str) -> list[float]:

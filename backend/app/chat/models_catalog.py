@@ -50,7 +50,9 @@ def provider_label(provider: ChatProvider) -> str:
 
 
 def configured_providers() -> list[ChatProvider]:
-    providers: list[ChatProvider] = ["local"]
+    providers: list[ChatProvider] = []
+    if settings.use_ollama:
+        providers.append("local")
     if settings.google_api_key.strip():
         providers.append("google")
     if settings.opencode_api_key.strip():
@@ -124,8 +126,11 @@ def build_providers_response() -> ChatProvidersResponse:
 
 def _fetch_ollama_models() -> list[ChatModelOption]:
     base = settings.ollama_base_url.rstrip("/")
-    response = httpx.get(f"{base}/api/tags", timeout=10.0)
-    response.raise_for_status()
+    try:
+        response = httpx.get(f"{base}/api/tags", timeout=10.0)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return []
 
     models: list[ChatModelOption] = []
     for entry in response.json().get("models", []):

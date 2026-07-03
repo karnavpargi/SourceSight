@@ -103,6 +103,11 @@ async def update_thread_title(
     return _parse_thread(_require_row(response.data))
 
 
+async def delete_thread(client: AsyncClient, user_id: UUID, thread_id: UUID) -> None:
+    await get_thread(client, user_id, thread_id)
+    await client.table("chat_threads").delete().eq("id", str(thread_id)).execute()
+
+
 async def title_thread_from_first_message(
     client: AsyncClient,
     user_id: UUID,

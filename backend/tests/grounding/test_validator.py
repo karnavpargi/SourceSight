@@ -112,7 +112,7 @@ def test_validate_rejects_orphan_citation_record() -> None:
 
 def test_validate_rejects_uncited_factual_segment() -> None:
     answer = GroundedAnswer(
-        answer="AWS operating income rose sharply. Margins improved [1].",
+        answer="AWS operating income rose 42%. Margins improved [1].",
         citations=[
             Citation(
                 citation_index=1,
@@ -123,6 +123,27 @@ def test_validate_rejects_uncited_factual_segment() -> None:
     )
     with pytest.raises(GroundingError, match="Uncited segment"):
         validate(answer, [_passage()])
+
+
+def test_validate_allows_qualitative_lead_in_without_numeric_claim() -> None:
+    answer = GroundedAnswer(
+        answer="AWS operating income rose sharply. Revenue increased 12% year over year [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Revenue increased 12% year over year.",
+            )
+        ],
+    )
+    validate(answer, [_passage()])
+
+
+def test_validate_allows_alternate_refusal_wording() -> None:
+    answer = GroundedAnswer(
+        answer="I cannot answer that because the question is outside the corpus."
+    )
+    validate(answer, [_passage()])
 
 
 def test_validate_rejects_citation_to_unretrieved_chunk() -> None:

@@ -39,6 +39,10 @@ class CreateThreadRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
 
 
+class UpdateThreadRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+
+
 class MessageSummary(BaseModel):
     id: UUID
     role: str
@@ -101,6 +105,47 @@ async def create_thread(
         created_at=thread.created_at,
         updated_at=thread.updated_at,
     )
+
+
+@router.patch("/threads/{thread_id}", response_model=ThreadSummary)
+async def update_thread(
+    thread_id: UUID,
+    body: UpdateThreadRequest,
+    user: CurrentUser = Depends(get_current_user),
+    client: AsyncClient = Depends(get_user_client),
+) -> ThreadSummary:
+    try:
+        thread = await chat_store.update_thread_title(
+            client,
+            user.id,
+            thread_id,
+            body.title,
+        )
+    except ChatForbiddenError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
+    except ChatNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found") from exc
+
+    return ThreadSummary(
+        id=thread.id,
+        title=thread.title,
+        created_at=thread.created_at,
+        updated_at=thread.updated_at,
+    )
+
+
+@router.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(
+    thread_id: UUID,
+    user: CurrentUser = Depends(get_current_user),
+    client: AsyncClient = Depends(get_user_client),
+) -> None:
+    try:
+        await chat_store.delete_thread(client, user.id, thread_id)
+    except ChatForbiddenError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
+    except ChatNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found") from exc
 
 
 @router.get("/threads/{thread_id}/messages", response_model=list[MessageSummary])

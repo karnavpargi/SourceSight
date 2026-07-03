@@ -4,6 +4,7 @@ import uuid
 from datetime import date
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from app.database.document_chunk import DocumentChunk
@@ -18,6 +19,11 @@ from app.retrieval.retriever import (
     retrieve_passages,
 )
 from app.retrieval.types import SourcePassage
+
+
+@pytest.fixture(autouse=True)
+def enable_ollama_for_retriever_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.retrieval.retriever.settings.use_ollama", True)
 
 
 def _make_chunk(
@@ -209,6 +215,75 @@ def test_retrieve_passages_returns_empty_when_fusion_finds_nothing() -> None:
     assert result.query == "Amazon AWS"
     assert result.passages == []
     session.execute.assert_not_called()
+
+
+def test_retrieve_passages_skips_vector_search_when_ollama_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    monkeypatch.setattr("app.retrieval.retriever.settings.use_ollama", False)
+
+    with patch(
+        "app.retrieval.retriever.search_chunks_by_embedding",
+    ) as mock_vector, patch(
+        "app.retrieval.retriever.search_chunks_by_full_text",
+        return_value=[],
+    ), patch(
+        "app.retrieval.retriever.reciprocal_rank_fusion",
+        return_value=[],
+    ):
+        result = retrieve_passages(session, "AWS operating income")
+
+    mock_vector.assert_not_called()
+    assert result.passages == []
+
+
+def test_retrieve_passages_falls_back_to_full_text_when_embedding_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.retrieval.retriever.settings.use_ollama", True)
+    session = MagicMock()
+    document = _make_document()
+    chunk = _make_chunk(
+        chunk_id=uuid.uuid4(),
+        document=document,
+        chunk_index=1,
+        content="AWS operating income increased.",
+    )
+    text_hits = [RankedChunkHit(chunk_id=chunk.id, score=0.4)]
+    fused_hits = [FusedChunkHit(chunk_id=chunk.id, score=0.016)]
+
+    def fake_execute(_statement):
+        result = MagicMock()
+        scalars = MagicMock()
+        scalars.all.return_value = [chunk]
+        result.scalars.return_value = scalars
+        return result
+
+    session.execute.side_effect = fake_execute
+
+    with patch(
+        "app.retrieval.retriever.search_chunks_by_embedding",
+    ) as mock_vector, patch(
+        "app.retrieval.retriever.search_chunks_by_full_text",
+        return_value=text_hits,
+    ) as mock_text, patch(
+        "app.retrieval.retriever.reciprocal_rank_fusion",
+        return_value=fused_hits,
+    ) as mock_fusion:
+        result = retrieve_passages(
+            session,
+            "AWS operating income",
+            embed_query=lambda _query: (_ for _ in ()).throw(
+                httpx.ConnectError("connection refused")
+            ),
+        )
+
+    mock_vector.assert_not_called()
+    mock_text.assert_called_once()
+    mock_fusion.assert_called_once_with([], text_hits, limit=10)
+    assert len(result.passages) == 1
+    assert result.passages[0].chunk_id == chunk.id
 
 
 def test_retrieve_passages_uses_default_embed_query() -> None:

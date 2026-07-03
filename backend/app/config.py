@@ -30,13 +30,15 @@ class Settings(BaseSettings):
     opencode_api_key: str = ""
     opencode_base_url: str = "https://opencode.ai/zen/go/v1"
 
-    # Embeddings (local Ollama only)
+    # Embeddings (local Ollama). When false, retrieval uses full-text search only.
+    use_ollama: bool = False
     embedding_dimensions: int = 768
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "nomic-embed-text"
 
     # Server
     allowed_origins: Annotated[list[str], NoDecode]
+    log_json: bool = True
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -63,6 +65,8 @@ class Settings(BaseSettings):
             raise ValueError("GOOGLE_API_KEY is required when CHAT_PROVIDER is google")
         if self.chat_provider == "opencode" and not self.opencode_api_key.strip():
             raise ValueError("OPENCODE_API_KEY is required when CHAT_PROVIDER is opencode")
+        if self.chat_provider == "local" and not self.use_ollama:
+            raise ValueError("CHAT_PROVIDER cannot be local when USE_OLLAMA is false")
         return self
 
     def ollama_openai_base_url(self) -> str:

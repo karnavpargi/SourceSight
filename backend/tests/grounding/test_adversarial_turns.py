@@ -235,6 +235,26 @@ async def test_refuses_model_answer_without_citations() -> None:
 
 
 @pytest.mark.anyio
+async def test_repairs_answer_with_markers_but_missing_citation_records() -> None:
+    """Happy path: markers + cited_passages are repaired into a valid grounded answer."""
+    passages = [_passage()]
+    answer = GroundedAnswer(
+        answer="AWS operating income rose [1].",
+        cited_passages=passages,
+    )
+    body, append, attach, update_message_data = await _run_turn(
+        user_text=WELL_GROUNDED_PROMPT,
+        agent_side_effect=_fake_run_agent_factory(answer, passages),
+        passages=passages,
+    )
+
+    assert _assembled_text(body) == "AWS operating income rose [1]."
+    assert "data-citation" in _event_types(body)
+    attach.assert_awaited_once()
+    update_message_data.assert_awaited_once()
+
+
+@pytest.mark.anyio
 async def test_well_grounded_question_streams_normally() -> None:
     """Happy path: a cited answer streams with citation parts and is persisted."""
     body, append, attach, update_message_data = await _run_turn(

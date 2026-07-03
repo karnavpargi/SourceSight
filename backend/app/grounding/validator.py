@@ -9,7 +9,22 @@ from app.retrieval.types import SourcePassage
 
 CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-REFUSAL_PREFIX = "this corpus does not contain enough evidence"
+FACTUAL_EVIDENCE_RE = re.compile(
+    r"[\d$%]|\b\d+(?:\.\d+)?\s*(?:million|billion|trillion|bn|m|b)\b",
+    re.IGNORECASE,
+)
+REFUSAL_PHRASES = (
+    "does not contain enough evidence",
+    "not contain enough evidence",
+    "insufficient evidence",
+    "cannot answer that",
+    "can't answer that",
+    "could not find relevant",
+    "no relevant passages",
+    "outside the corpus",
+    "not in the corpus",
+    "not covered by the corpus",
+)
 
 
 class GroundingError(Exception):
@@ -22,7 +37,8 @@ def _normalize_refusal_text(text: str) -> str:
 
 
 def _is_refusal(answer: str) -> bool:
-    return _normalize_refusal_text(answer).startswith(REFUSAL_PREFIX)
+    normalized = _normalize_refusal_text(answer)
+    return any(phrase in normalized for phrase in REFUSAL_PHRASES)
 
 
 def _citation_markers_in_answer(answer: str) -> set[int]:
@@ -37,6 +53,15 @@ def _claim_segments(answer: str) -> list[str]:
             if segment:
                 segments.append(segment)
     return segments
+
+
+def _uncited_factual_segments(answer: str) -> list[str]:
+    segments = _claim_segments(answer)
+    return [
+        segment
+        for segment in segments
+        if not CITATION_MARKER_RE.search(segment) and FACTUAL_EVIDENCE_RE.search(segment)
+    ]
 
 
 def validate(answer: GroundedAnswer, retrieved_passages: list[SourcePassage]) -> None:
@@ -62,11 +87,7 @@ def validate(answer: GroundedAnswer, retrieved_passages: list[SourcePassage]) ->
         missing = ", ".join(f"[{index}]" for index in sorted(orphan_citations))
         raise GroundingError(f"Citation records exist for {missing} but the answer text omits them.")
 
-    uncited_segments = [
-        segment
-        for segment in _claim_segments(answer.answer)
-        if not CITATION_MARKER_RE.search(segment)
-    ]
+    uncited_segments = _uncited_factual_segments(answer.answer)
     if uncited_segments:
         preview = uncited_segments[0][:120]
         raise GroundingError(

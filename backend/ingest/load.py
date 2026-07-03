@@ -45,7 +45,7 @@ def load_filing(
     source_url: str,
     markdown_content: str,
     chunks: list[TextChunk],
-    embeddings: list[list[float]],
+    embeddings: list[list[float] | None],
     extra_metadata: dict | None = None,
 ) -> uuid.UUID:
     if len(chunks) != len(embeddings):

@@ -112,6 +112,7 @@ def test_ollama_retry_loop_exhaustion() -> None:
 
 
 def test_providers_init_exports() -> None:
-    from ingest.providers import embed_texts_ollama
+    from ingest.providers import embed_texts_google, embed_texts_ollama
 
+    assert callable(embed_texts_google)
     assert callable(embed_texts_ollama)

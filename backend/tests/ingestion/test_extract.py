@@ -80,6 +80,16 @@ def test_extract_from_path(tmp_path: Path) -> None:
     assert "Filing body text." in markdown
 
 
+def test_extract_skips_empty_table_cells() -> None:
+    html = """
+    <html><body>
+    <table><tr><td></td><td>Value</td></tr></table>
+    </body></html>
+    """
+    markdown = extract_markdown(html)
+    assert "Value" in markdown
+
+
 def test_extract_handles_tables_headings_and_skipped_tags() -> None:
     html = """
     <html><body>

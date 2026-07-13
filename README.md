@@ -6,6 +6,8 @@ An internal AI chatbot that lets analysts query a corpus of documents in plain E
 
 **Sourceline Capital** — fictional independent investment research firm. Their analysts spend half their week reading 10-Ks and 10-Qs before they can produce any original analysis. SourceSight eats that intake work so they can skip straight to insight.
 
+Full brief: [docs/client-brief.md](docs/client-brief.md)
+
 ## Stack
 
 | Layer            | Choice                                              |
@@ -16,7 +18,7 @@ An internal AI chatbot that lets analysts query a corpus of documents in plain E
 | Migrations       | SQLAlchemy models + Alembic                         |
 | Retrieval        | Supabase `pgvector` + Postgres full-text search     |
 | Auth             | Supabase Auth (email only)                          |
-| Hosting          | Railway                                             |
+| Hosting          | Raspberry Pi 4B + Cloudflare Tunnel (`sourcesight.kpargi.eu.org`) |
 | LLM + embeddings | OpenAI                                              |
 
 ## Repo layout

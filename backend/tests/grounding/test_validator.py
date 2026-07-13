@@ -139,6 +139,90 @@ def test_validate_allows_qualitative_lead_in_without_numeric_claim() -> None:
     validate(answer, [_passage()])
 
 
+def test_validate_allows_fiscal_year_lead_in_without_citation() -> None:
+    answer = GroundedAnswer(
+        answer=(
+            "Apple's revenue mix shifted significantly between FY2021 and FY2025. "
+            "iPhone share fell from 52% to 49% while Services grew from 19% to 24% [1]."
+        ),
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Product and Services revenue mix data.",
+            )
+        ],
+    )
+    validate(answer, [_passage()])
+
+
+def test_validate_allows_bare_year_range_lead_in_without_citation() -> None:
+    answer = GroundedAnswer(
+        answer=(
+            "The revenue mix changed across 2021–2025. "
+            "Services revenue reached $85 billion in fiscal 2024 [1]."
+        ),
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Services revenue reached $85 billion.",
+            )
+        ],
+    )
+    validate(answer, [_passage()])
+
+
+def test_validate_allows_fiscal_years_through_phrasing_without_citation() -> None:
+    answer = GroundedAnswer(
+        answer=(
+            "From Apple's 10-Ks for fiscal years 2021 through 2025, the revenue mix shifted "
+            "notably away from hardware categories. Services share grew from 19% to 24% [1]."
+        ),
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Services share grew.",
+            )
+        ],
+    )
+    validate(answer, [_passage()])
+
+
+def test_validate_rejects_uncited_percentages_with_year_range_in_same_sentence() -> None:
+    answer = GroundedAnswer(
+        answer=(
+            "Apple's revenue mix shifted notably from 2021 to 2025, with Services growing "
+            "its share of total net sales from 18.7% to 24%. iPhone share declined [1]."
+        ),
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="iPhone share declined.",
+            )
+        ],
+    )
+    with pytest.raises(GroundingError, match="Uncited segment"):
+        validate(answer, [_passage()])
+
+
+def test_validate_rejects_uncited_dollar_amount() -> None:
+    answer = GroundedAnswer(
+        answer="Apple reported $205B in revenue. Margins improved [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Margins improved.",
+            )
+        ],
+    )
+    with pytest.raises(GroundingError, match="Uncited segment"):
+        validate(answer, [_passage()])
+
+
 def test_validate_allows_alternate_refusal_wording() -> None:
     answer = GroundedAnswer(
         answer="I cannot answer that because the question is outside the corpus."

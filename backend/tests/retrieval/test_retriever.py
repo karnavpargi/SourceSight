@@ -22,8 +22,8 @@ from app.retrieval.types import SourcePassage
 
 
 @pytest.fixture(autouse=True)
-def enable_ollama_for_retriever_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.retrieval.retriever.settings.use_ollama", True)
+def enable_embeddings_for_retriever_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.retrieval.retriever.settings.embedding_provider", "google")
 
 
 def _make_chunk(
@@ -217,11 +217,11 @@ def test_retrieve_passages_returns_empty_when_fusion_finds_nothing() -> None:
     session.execute.assert_not_called()
 
 
-def test_retrieve_passages_skips_vector_search_when_ollama_disabled(
+def test_retrieve_passages_skips_vector_search_when_embeddings_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = MagicMock()
-    monkeypatch.setattr("app.retrieval.retriever.settings.use_ollama", False)
+    monkeypatch.setattr("app.retrieval.retriever.settings.embedding_provider", "none")
 
     with patch(
         "app.retrieval.retriever.search_chunks_by_embedding",
@@ -241,7 +241,7 @@ def test_retrieve_passages_skips_vector_search_when_ollama_disabled(
 def test_retrieve_passages_falls_back_to_full_text_when_embedding_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.retrieval.retriever.settings.use_ollama", True)
+    monkeypatch.setattr("app.retrieval.retriever.settings.embedding_provider", "google")
     session = MagicMock()
     document = _make_document()
     chunk = _make_chunk(
@@ -292,18 +292,21 @@ def test_retrieve_passages_uses_default_embed_query() -> None:
     with patch("app.retrieval.retriever.search_chunks_by_embedding", return_value=[]), patch(
         "app.retrieval.retriever.search_chunks_by_full_text", return_value=[]
     ), patch("app.retrieval.retriever.reciprocal_rank_fusion", return_value=[]), patch(
-        "app.retrieval.retriever.embed_texts",
-        return_value=[[0.5] * 768],
-    ) as embed_texts:
+        "app.retrieval.retriever.embed_query_text",
+        return_value=[0.5] * 768,
+    ) as embed_query:
         retrieve_passages(session, "Amazon AWS")
 
-    embed_texts.assert_called_once_with(["Amazon AWS"])
+    embed_query.assert_called_once_with("Amazon AWS")
 
 
-def test_default_embed_query_delegates_to_embed_texts() -> None:
-    with patch("app.retrieval.retriever.embed_texts", return_value=[[0.1, 0.2]]) as embed_texts:
+def test_default_embed_query_delegates_to_embed_query() -> None:
+    with patch(
+        "app.retrieval.retriever.embed_query_text",
+        return_value=[0.1, 0.2],
+    ) as embed_query:
         assert _default_embed_query("aws revenue") == [0.1, 0.2]
-    embed_texts.assert_called_once_with(["aws revenue"])
+    embed_query.assert_called_once_with("aws revenue")
 
 
 def test_load_chunks_returns_empty_for_no_ids() -> None:

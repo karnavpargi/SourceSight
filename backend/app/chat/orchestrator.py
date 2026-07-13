@@ -57,6 +57,12 @@ from app.retrieval.types import RetrievalResult, SourcePassage
 
 REFUSAL_MESSAGE = "This corpus doesn't contain enough evidence to answer that."
 
+_GROUNDING_RETRY_FEEDBACK = (
+    "Rewrite the answer so every sentence containing $, %, or numeric amounts has inline "
+    "[n] citation markers matching your citation records. Keep the same evidence and "
+    "claims; only fix citation placement."
+)
+
 MODEL_UNAVAILABLE_MESSAGE = (
     "The language model is unavailable right now. "
     "Check your CHAT_PROVIDER API key, billing, and quota."
@@ -404,13 +410,49 @@ async def _stream_chat_turn(
         yield event
     await asyncio.sleep(0)
 
+    grounding_error: GroundingError | None = None
     try:
-        answer = repair_grounded_answer(answer, retrieved_passages)
-        grounding_validator.validate(answer, retrieved_passages)
+        answer = _finalize_grounded_answer(
+            answer,
+            retrieved_passages,
+            grounding_validator,
+        )
     except GroundingError as exc:
+        grounding_error = exc
+        if answer.citations and retrieved_passages:
+            logger.info(
+                "chat.grounding_retry",
+                reason=str(exc),
+                retrieved_passage_count=len(retrieved_passages),
+                citation_count=len(answer.citations),
+                provider=chat_model.provider,
+                model=chat_model.model,
+            )
+            try:
+                answer, retrieved_passages = await _run_agent_grounding_retry(
+                    user_text,
+                    grounding_error=str(exc),
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    chat_model=chat_model,
+                    generation=generation,
+                    grounding_validator=grounding_validator,
+                    retriever=retriever,
+                    activity=activity,
+                )
+                answer = _finalize_grounded_answer(
+                    answer,
+                    retrieved_passages,
+                    grounding_validator,
+                )
+                grounding_error = None
+            except GroundingError as retry_exc:
+                grounding_error = retry_exc
+
+    if grounding_error is not None:
         logger.warning(
             "chat.grounding_failed",
-            reason=str(exc),
+            reason=str(grounding_error),
             retrieved_passage_count=len(retrieved_passages),
             citation_count=len(answer.citations),
             provider=chat_model.provider,
@@ -474,6 +516,45 @@ async def _stream_chat_turn(
         model=chat_model.model,
         started_at=turn_started,
         citation_count=len(answer.citations),
+    )
+
+
+def _finalize_grounded_answer(
+    answer: GroundedAnswer,
+    retrieved_passages: list[SourcePassage],
+    grounding_validator: GroundingValidator,
+) -> GroundedAnswer:
+    answer = repair_grounded_answer(answer, retrieved_passages)
+    grounding_validator.validate(answer, retrieved_passages)
+    return answer
+
+
+async def _run_agent_grounding_retry(
+    user_text: str,
+    *,
+    grounding_error: str,
+    user_id: UUID,
+    thread_id: UUID,
+    chat_model: ResolvedChatModel,
+    generation: ChatGenerationConfig,
+    grounding_validator: GroundingValidator,
+    retriever: DocumentRetriever | None,
+    activity: TurnActivityEmitter | None,
+) -> tuple[GroundedAnswer, list[SourcePassage]]:
+    retry_prompt = (
+        f"{user_text}\n\n---\n"
+        f"Your previous answer failed grounding validation: {grounding_error}\n"
+        f"{_GROUNDING_RETRY_FEEDBACK}"
+    )
+    return await _run_agent(
+        retry_prompt,
+        user_id=user_id,
+        thread_id=thread_id,
+        chat_model=chat_model,
+        generation=generation,
+        grounding_validator=grounding_validator,
+        activity=activity,
+        retriever=retriever,
     )
 
 

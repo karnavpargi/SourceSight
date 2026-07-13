@@ -404,6 +404,223 @@ async def test_run_chat_turn_refuses_ungrounded_model_answer() -> None:
     update_message_data.assert_not_awaited()
 
 
+def _apple_mix_bad_answer() -> GroundedAnswer:
+    return GroundedAnswer(
+        answer=(
+            "Apple's revenue mix shifted notably from 2021 to 2025, with Services growing "
+            "its share of total net sales from 18.7% to 24%. iPhone share declined [1]."
+        ),
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="iPhone share declined.",
+            )
+        ],
+        cited_passages=[_passage()],
+    )
+
+
+def _apple_mix_fixed_answer() -> GroundedAnswer:
+    return GroundedAnswer(
+        answer=(
+            "Apple's revenue mix shifted notably from 2021 to 2025, with Services growing "
+            "its share of total net sales from 18.7% to 24% [1]. iPhone share declined [1]."
+        ),
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Services share grew from 18.7% to 24%.",
+            )
+        ],
+        cited_passages=[_passage()],
+    )
+
+
+@pytest.mark.anyio
+async def test_run_chat_turn_retries_partial_grounding_failure() -> None:
+    retriever = StubRetriever(passages=[_passage()])
+    client = object()
+    call_count = 0
+
+    async def _fake_run_agent_retry(
+        user_text: str,
+        *,
+        user_id: UUID,
+        thread_id: UUID,
+        chat_model: ResolvedChatModel,
+        generation: ChatGenerationConfig,
+        grounding_validator,
+        activity=None,
+        retriever=None,
+    ) -> tuple[GroundedAnswer, list[SourcePassage]]:
+        nonlocal call_count
+        call_count += 1
+        if activity is not None:
+            activity.start_thinking(f"Thinking with {chat_model.model}...")
+        if retriever is not None:
+            retriever.search_filings(user_text)
+        if activity is not None:
+            activity.end_thinking()
+        if call_count == 1:
+            return _apple_mix_bad_answer(), [_passage()]
+        assert "failed grounding validation" in user_text
+        assert "Uncited segment" in user_text
+        return _apple_mix_fixed_answer(), [_passage()]
+
+    append = AsyncMock(return_value=_appended_message())
+    attach = AsyncMock(return_value=[])
+    update_message_data = AsyncMock(return_value=_appended_message())
+
+    with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
+        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+    ), patch(
+        "app.chat.orchestrator.chat_store.update_message_data",
+        new=update_message_data,
+    ), patch(
+        "app.chat.orchestrator.chat_store.title_thread_from_first_message",
+        new=AsyncMock(),
+    ), patch(
+        "app.chat.orchestrator._run_agent",
+        side_effect=_fake_run_agent_retry,
+    ):
+        response = await run_chat_turn(
+            client,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            user_text="How did Apple's revenue mix change from 2021 to 2025?",
+            user_message_data=None,
+            retriever=retriever,
+            grounding_validator=grounding_validator,
+            chat_model=TEST_CHAT_MODEL,
+            generation=TEST_GENERATION,
+        )
+        body = await _collect(response)
+
+    assert call_count == 2
+    assert "18.7% to 24% [1]" in _assembled_text(body)
+    assert REFUSAL_MESSAGE not in body
+    attach.assert_awaited_once()
+    update_message_data.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_run_chat_turn_refuses_after_grounding_retry_fails() -> None:
+    retriever = StubRetriever(passages=[_passage()])
+    client = object()
+
+    async def _fake_run_agent_always_bad(
+        user_text: str,
+        *,
+        user_id: UUID,
+        thread_id: UUID,
+        chat_model: ResolvedChatModel,
+        generation: ChatGenerationConfig,
+        grounding_validator,
+        activity=None,
+        retriever=None,
+    ) -> tuple[GroundedAnswer, list[SourcePassage]]:
+        if activity is not None:
+            activity.start_thinking(f"Thinking with {chat_model.model}...")
+        if retriever is not None:
+            retriever.search_filings(user_text)
+        if activity is not None:
+            activity.end_thinking()
+        return _apple_mix_bad_answer(), [_passage()]
+
+    append = AsyncMock(return_value=_appended_message())
+    attach = AsyncMock(return_value=[])
+    update_message_data = AsyncMock(return_value=_appended_message())
+
+    with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
+        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+    ), patch(
+        "app.chat.orchestrator.chat_store.update_message_data",
+        new=update_message_data,
+    ), patch(
+        "app.chat.orchestrator.chat_store.title_thread_from_first_message",
+        new=AsyncMock(),
+    ), patch(
+        "app.chat.orchestrator._run_agent",
+        side_effect=_fake_run_agent_always_bad,
+    ):
+        response = await run_chat_turn(
+            client,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            user_text="How did Apple's revenue mix change from 2021 to 2025?",
+            user_message_data=None,
+            retriever=retriever,
+            grounding_validator=grounding_validator,
+            chat_model=TEST_CHAT_MODEL,
+            generation=TEST_GENERATION,
+        )
+        body = await _collect(response)
+
+    assert _assembled_text(body) == REFUSAL_MESSAGE
+    assert "18.7%" not in body
+    attach.assert_not_awaited()
+    update_message_data.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_run_chat_turn_does_not_retry_without_citations() -> None:
+    retriever = StubRetriever(passages=[_passage()])
+    client = object()
+    call_count = 0
+
+    async def _fake_run_agent_uncited(
+        user_text: str,
+        *,
+        user_id: UUID,
+        thread_id: UUID,
+        chat_model: ResolvedChatModel,
+        generation: ChatGenerationConfig,
+        grounding_validator,
+        activity=None,
+        retriever=None,
+    ) -> tuple[GroundedAnswer, list[SourcePassage]]:
+        nonlocal call_count
+        call_count += 1
+        return (
+            GroundedAnswer(answer="AWS operating income rose 42%."),
+            [_passage()],
+        )
+
+    append = AsyncMock(return_value=_appended_message())
+    attach = AsyncMock(return_value=[])
+
+    with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
+        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+    ), patch(
+        "app.chat.orchestrator.chat_store.update_message_data",
+        new=AsyncMock(),
+    ), patch(
+        "app.chat.orchestrator.chat_store.title_thread_from_first_message",
+        new=AsyncMock(),
+    ), patch(
+        "app.chat.orchestrator._run_agent",
+        side_effect=_fake_run_agent_uncited,
+    ):
+        response = await run_chat_turn(
+            client,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            user_text="How did AWS operating income change?",
+            user_message_data=None,
+            retriever=retriever,
+            grounding_validator=grounding_validator,
+            chat_model=TEST_CHAT_MODEL,
+            generation=TEST_GENERATION,
+        )
+        body = await _collect(response)
+
+    assert call_count == 1
+    assert _assembled_text(body) == REFUSAL_MESSAGE
+    attach.assert_not_awaited()
+
+
 @pytest.mark.anyio
 async def test_run_chat_turn_streams_model_unavailable_message() -> None:
     retriever = StubRetriever(passages=[_passage()])

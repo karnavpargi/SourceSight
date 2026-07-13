@@ -7,6 +7,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 ChatProvider = Literal["local", "google", "opencode"]
 CHAT_PROVIDERS: frozenset[str] = frozenset({"local", "google", "opencode"})
 
+EmbeddingProvider = Literal["google", "ollama", "none"]
+EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"google", "ollama", "none"})
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -30,9 +33,11 @@ class Settings(BaseSettings):
     opencode_api_key: str = ""
     opencode_base_url: str = "https://opencode.ai/zen/go/v1"
 
-    # Embeddings (local Ollama). When false, retrieval uses full-text search only.
-    use_ollama: bool = False
+    # Embeddings — Ollama (local or remote), Google Gemini, or FTS-only (none)
+    embedding_provider: EmbeddingProvider = "ollama"
     embedding_dimensions: int = 768
+    google_embedding_model: str = "gemini-embedding-001"
+    use_ollama: bool = False
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "nomic-embed-text"
 
@@ -67,6 +72,11 @@ class Settings(BaseSettings):
             raise ValueError("OPENCODE_API_KEY is required when CHAT_PROVIDER is opencode")
         if self.chat_provider == "local" and not self.use_ollama:
             raise ValueError("CHAT_PROVIDER cannot be local when USE_OLLAMA is false")
+        if self.embedding_provider not in EMBEDDING_PROVIDERS:
+            supported = ", ".join(sorted(EMBEDDING_PROVIDERS))
+            raise ValueError(f"EMBEDDING_PROVIDER must be one of: {supported}")
+        if self.embedding_provider == "google" and not self.google_api_key.strip():
+            raise ValueError("GOOGLE_API_KEY is required when EMBEDDING_PROVIDER is google")
         return self
 
     def ollama_openai_base_url(self) -> str:

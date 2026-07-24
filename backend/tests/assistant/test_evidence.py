@@ -1,0 +1,56 @@
+from datetime import date
+from uuid import uuid4
+
+from app.assistant.evidence import EvidenceRegistry
+from app.retrieval.types import SourcePassage
+
+
+def _passage(content: str = "AWS income", ticker: str = "AMZN") -> SourcePassage:
+    return SourcePassage(
+        chunk_id=uuid4(),
+        document_id=uuid4(),
+        chunk_index=0,
+        content=content,
+        section="Item 8",
+        page=None,
+        ticker=ticker,
+        company_name="Amazon",
+        form_type="10-K",
+        fiscal_year=2024,
+        accession_number="0001",
+        filing_date=date(2025, 1, 31),
+        report_date=None,
+        source_url="https://example.com",
+        score=1.0,
+    )
+
+
+def test_registry_assigns_aliases_and_dedupes() -> None:
+    registry = EvidenceRegistry(max_passages=8)
+    p1 = _passage("one")
+    p2 = _passage("two")
+    first = registry.register([p1, p2, p1])
+    assert [e.alias for e in first] == ["E1", "E2"]
+    assert first[0].content == "one"
+    assert first[0].ticker == "AMZN"
+    assert first[0].fiscal_year == 2024
+    assert first[0].section == "Item 8"
+    assert "chunk_id" not in first[0].model_dump()
+    assert registry.resolve("E1").chunk_id == p1.chunk_id
+
+
+def test_registry_enforces_max_passages() -> None:
+    registry = EvidenceRegistry(max_passages=2)
+    passages = [_passage(f"c{i}") for i in range(5)]
+    compact = registry.register(passages)
+    assert len(compact) == 2
+    assert len(registry.all_passages()) == 2
+
+
+def test_registry_rejects_unknown_alias() -> None:
+    registry = EvidenceRegistry()
+    try:
+        registry.resolve("E99")
+        raise AssertionError("expected KeyError")
+    except KeyError:
+        pass

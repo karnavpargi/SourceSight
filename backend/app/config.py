@@ -2,7 +2,12 @@ from functools import lru_cache
 from typing import Annotated, Literal, Self
 
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 ChatProvider = Literal["local", "google", "opencode"]
 CHAT_PROVIDERS: frozenset[str] = frozenset({"local", "google", "opencode"})
@@ -19,6 +24,20 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Prefer backend/.env over exported shell vars. Stale GOOGLE_API_KEY in
+        # ~/.zshrc otherwise overrides the operator .env and breaks chat/providers.
+        del settings_cls
+        return init_settings, dotenv_settings, env_settings, file_secret_settings
+
     # Supabase (auth + API)
     supabase_url: str
     supabase_anon_key: str
@@ -29,6 +48,7 @@ class Settings(BaseSettings):
 
     # Chat LLM — local (Ollama), Google AI Studio, or OpenCode Zen
     chat_provider: ChatProvider = "google"
+    chat_model: str = "gemini-3.5-flash-lite"
     google_api_key: str = ""
     opencode_api_key: str = ""
     opencode_base_url: str = "https://opencode.ai/zen/go/v1"
@@ -72,6 +92,8 @@ class Settings(BaseSettings):
             raise ValueError("OPENCODE_API_KEY is required when CHAT_PROVIDER is opencode")
         if self.chat_provider == "local" and not self.use_ollama:
             raise ValueError("CHAT_PROVIDER cannot be local when USE_OLLAMA is false")
+        if not self.chat_model.strip():
+            raise ValueError("CHAT_MODEL is required")
         if self.embedding_provider not in EMBEDDING_PROVIDERS:
             supported = ", ".join(sorted(EMBEDDING_PROVIDERS))
             raise ValueError(f"EMBEDDING_PROVIDER must be one of: {supported}")

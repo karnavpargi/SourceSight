@@ -1,6 +1,36 @@
+from pathlib import Path
+
 import pytest
 
 from app.config import Settings
+
+
+def test_dotenv_overrides_shell_google_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SUPABASE_URL=https://example.supabase.co",
+                "SUPABASE_ANON_KEY=anon",
+                "SUPABASE_SERVICE_ROLE_KEY=service",
+                "DATABASE_URL=postgresql://postgres:pw@localhost:5432/postgres",
+                "ALLOWED_ORIGINS=http://localhost:5173",
+                "CHAT_PROVIDER=google",
+                "EMBEDDING_PROVIDER=google",
+                "GOOGLE_API_KEY=from-dotenv-key",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "from-shell-stale-key")
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.google_api_key == "from-dotenv-key"
 
 
 def test_chat_provider_accepts_local_alias_ollama() -> None:

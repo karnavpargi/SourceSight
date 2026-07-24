@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import settings
 from app.database.document_chunk import DocumentChunk
-from app.database.source_document import SourceDocument
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.queries import (
     DEFAULT_SEARCH_LIMIT,
@@ -21,7 +20,7 @@ from app.retrieval.queries import (
     search_chunks_by_full_text,
 )
 from app.retrieval.types import RetrievalResult, SourcePassage
-from ingest.embed import embed_texts
+from ingest.embed import embed_query as embed_query_text
 
 DEFAULT_RETRIEVAL_LIMIT = 10
 DEFAULT_NEIGHBOR_WINDOW = 0
@@ -89,13 +88,15 @@ def _vector_search_hits(
     *,
     candidate_limit: int,
 ) -> list[RankedChunkHit]:
+    if settings.embedding_provider == "none":
+        return []
     try:
         query_embedding = embed_fn(query)
     except httpx.HTTPError:
-        logger.warning(
-            "retrieval.embedding_unavailable",
-            ollama_base_url=settings.ollama_base_url,
-        )
+        log_kwargs: dict[str, str] = {"embedding_provider": settings.embedding_provider}
+        if settings.embedding_provider == "ollama":
+            log_kwargs["ollama_base_url"] = settings.ollama_base_url
+        logger.warning("retrieval.embedding_unavailable", **log_kwargs)
         return []
 
     return search_chunks_by_embedding(
@@ -106,7 +107,7 @@ def _vector_search_hits(
 
 
 def _default_embed_query(query: str) -> list[float]:
-    return embed_texts([query])[0]
+    return embed_query_text(query)
 
 
 def _load_chunks(

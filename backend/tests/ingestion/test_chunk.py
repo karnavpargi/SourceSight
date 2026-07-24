@@ -89,12 +89,34 @@ def test_estimate_tokens_minimum_one() -> None:
     assert estimate_tokens("") == 1
 
 
+def test_chunk_split_sections_returns_empty_for_blank_markdown() -> None:
+    from ingest.chunk import _split_sections
+
+    assert _split_sections("") == []
+
+
+def test_chunk_split_sections_flushes_trailing_header_only() -> None:
+    from ingest.chunk import _split_sections
+
+    sections = _split_sections("## Item 1. Business")
+    assert sections == [("Item 1. Business", "")]
+
+
 def test_chunk_section_with_no_paragraphs_returns_empty() -> None:
     from ingest.chunk import _chunk_section
 
     body = ("   \n\n" * 300)
     chunks = _chunk_section(body, section="Item 1. Business", target_tokens=10, overlap_tokens=2)
     assert chunks == []
+
+
+def test_chunk_split_long_paragraph_returns_empty_when_no_sentences() -> None:
+    from unittest.mock import patch
+
+    from ingest.chunk import _split_long_paragraph
+
+    with patch("ingest.chunk.re.split", return_value=["", "  "]):
+        assert _split_long_paragraph("ignored", target_tokens=5) == []
 
 
 def test_chunk_split_long_paragraph_skips_blank_sentences() -> None:

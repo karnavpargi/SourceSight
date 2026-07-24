@@ -153,7 +153,7 @@ def _fetch_google_models() -> list[ChatModelOption]:
 
     response = http_get(
         GOOGLE_MODELS_URL,
-        params={"key": settings.google_api_key},
+        headers={"X-goog-api-key": settings.google_api_key},
         timeout=10.0,
     )
     response.raise_for_status()

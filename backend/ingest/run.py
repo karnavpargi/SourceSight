@@ -108,7 +108,7 @@ def ingest_filing(
         html_path = downloads_dir / filing.local_path
         markdown = extract_markdown_from_path(html_path)
         chunks = chunk_markdown(markdown)
-        if settings.use_ollama:
+        if settings.embedding_provider != "none":
             embeddings = embed_texts([chunk.content for chunk in chunks])
         else:
             embeddings = [None] * len(chunks)

@@ -89,6 +89,39 @@ def test_ingest_filing_skips_existing() -> None:
         assert ingest_filing(filing, downloads_dir=Path("/tmp")) == 0
 
 
+def test_ingest_filing_stores_null_embeddings_when_provider_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("ingest.run.settings.embedding_provider", "none")
+    html_path = tmp_path / "aapl.htm"
+    html_path.write_text("<html><body><p>Item 1. Business text.</p></body></html>", encoding="utf-8")
+    filing = FilingRecord(
+        ticker="AAPL",
+        cik="0000320193",
+        form_type="10-K",
+        filing_date=date(2024, 11, 1),
+        report_date=date(2024, 9, 28),
+        accession_number="0000320193-24-000123",
+        primary_document="aapl.htm",
+        source_url="https://example.com",
+        local_path="aapl.htm",
+    )
+    chunks = [TextChunk(0, "chunk", "Item 1. Business", None, 1)]
+    with patch("ingest.run.session_scope") as scope, patch(
+        "ingest.run.filing_exists", return_value=False
+    ), patch("ingest.run.extract_markdown_from_path", return_value="markdown"), patch(
+        "ingest.run.chunk_markdown", return_value=chunks
+    ), patch("ingest.run.embed_texts") as embed, patch(
+        "ingest.run.load_filing", return_value="doc-id"
+    ) as load:
+        scope.return_value.__enter__.return_value = MagicMock()
+        count = ingest_filing(filing, downloads_dir=tmp_path)
+    assert count == 1
+    embed.assert_not_called()
+    assert load.call_args.kwargs["embeddings"] == [None]
+
+
 def test_ingest_filing_processes_new_filing(tmp_path: Path) -> None:
     html_path = tmp_path / "aapl.htm"
     html_path.write_text("<html><body><p>Item 1. Business text.</p></body></html>", encoding="utf-8")
@@ -150,7 +183,6 @@ def test_run_ingest_counts_success_skip_and_failure(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    filing = load_manifest(manifest_path)[0]
 
     def ingest_side_effect(filing: FilingRecord, *, downloads_dir: Path) -> int:
         if filing.accession_number == "1":
@@ -208,6 +240,34 @@ def test_run_main_entrypoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(SystemExit) as exc:
         runpy.run_path(str(run_path), run_name="__main__")
     assert exc.value.code == 0
+
+
+def test_main_uses_default_paths_when_no_cli_args() -> None:
+    with patch("ingest.run.run_ingest", return_value=IngestStats(total_filings=0)) as run, patch(
+        "sys.argv",
+        ["run.py"],
+    ):
+        assert main() == 0
+
+    run.assert_called_once()
+    kwargs = run.call_args.kwargs
+    assert kwargs["manifest_path"].name == "manifest.json"
+    assert kwargs["downloads_dir"].name == "downloads"
+
+
+def test_main_with_custom_manifest_and_downloads_dir(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    downloads_dir = tmp_path / "downloads"
+    manifest_path.write_text(json.dumps({"filings": []}), encoding="utf-8")
+    downloads_dir.mkdir()
+
+    with patch("ingest.run.run_ingest", return_value=IngestStats(total_filings=0)) as run, patch(
+        "sys.argv",
+        ["run.py", str(manifest_path), str(downloads_dir)],
+    ):
+        assert main() == 0
+
+    run.assert_called_once_with(manifest_path=manifest_path, downloads_dir=downloads_dir)
 
 
 def test_main_success_and_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

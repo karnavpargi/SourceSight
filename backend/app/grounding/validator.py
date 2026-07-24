@@ -9,8 +9,18 @@ from app.retrieval.types import SourcePassage
 
 CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-FACTUAL_EVIDENCE_RE = re.compile(
-    r"[\d$%]|\b\d+(?:\.\d+)?\s*(?:million|billion|trillion|bn|m|b)\b",
+# Fiscal/calendar year references alone do not require citations (see assistant instructions).
+YEAR_REFERENCE_RE = re.compile(
+    r"\bFY\s*(?:19|20)\d{2}\b"
+    r"|\bfiscal\s+(?:year\s+)?(?:19|20)\d{2}\b"
+    r"|\b(?:19|20)\d{2}\s*[–-]\s*(?:19|20)\d{2}\b"
+    r"|\b(?:19|20)\d{2}\b",
+    re.IGNORECASE,
+)
+SUBSTANTIVE_NUMERIC_RE = re.compile(
+    r"[$%]"
+    r"|\$\s*\d+(?:\.\d+)?"
+    r"|\b\d+(?:\.\d+)?(?:%|\s*(?:million|billion|trillion|bn|m|b)\b)",
     re.IGNORECASE,
 )
 REFUSAL_PHRASES = (
@@ -55,12 +65,17 @@ def _claim_segments(answer: str) -> list[str]:
     return segments
 
 
+def _segment_requires_citation(segment: str) -> bool:
+    without_years = YEAR_REFERENCE_RE.sub("", segment)
+    return bool(SUBSTANTIVE_NUMERIC_RE.search(without_years))
+
+
 def _uncited_factual_segments(answer: str) -> list[str]:
     segments = _claim_segments(answer)
     return [
         segment
         for segment in segments
-        if not CITATION_MARKER_RE.search(segment) and FACTUAL_EVIDENCE_RE.search(segment)
+        if not CITATION_MARKER_RE.search(segment) and _segment_requires_citation(segment)
     ]
 
 

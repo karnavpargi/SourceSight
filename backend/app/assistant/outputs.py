@@ -19,7 +19,9 @@ class Citation(BaseModel):
         ge=1,
         description="1-based marker index shown in the answer text, e.g. [1].",
     )
-    chunk_id: UUID = Field(description="Retrieved document chunk backing this citation.")
+    chunk_id: UUID = Field(
+        description="Retrieved document chunk backing this citation."
+    )
     excerpt: str = Field(
         min_length=1,
         description="Quoted passage text supporting the cited claim.",

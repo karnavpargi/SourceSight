@@ -57,6 +57,32 @@ def test_load_filing_mismatched_counts() -> None:
         )
 
 
+def test_load_filing_without_report_date() -> None:
+    session = MagicMock()
+    chunks = [TextChunk(0, "Risk factors text.", "Item 1A. Risk Factors", None, 4)]
+    embeddings = [[0.1] * 768]
+
+    load_filing(
+        session,
+        ticker="AAPL",
+        cik="0000320193",
+        company_name="Apple Inc.",
+        form_type="10-K",
+        fiscal_year=2024,
+        accession_number="0000320193-24-000123",
+        filing_date=date(2024, 11, 1),
+        report_date=None,
+        primary_document="aapl.htm",
+        source_url="https://example.com",
+        markdown_content="# Filing",
+        chunks=chunks,
+        embeddings=embeddings,
+    )
+
+    chunk = session.add.call_args_list[-1].args[0]
+    assert "report_date" not in chunk.metadata_
+
+
 def test_load_filing_writes_document_and_chunks() -> None:
     session = MagicMock()
 
@@ -65,7 +91,7 @@ def test_load_filing_writes_document_and_chunks() -> None:
     ]
     embeddings = [[0.1] * 768]
 
-    doc_id = load_filing(
+    load_filing(
         session,
         ticker="AAPL",
         cik="0000320193",

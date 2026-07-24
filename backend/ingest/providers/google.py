@@ -15,6 +15,47 @@ GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 EmbeddingTaskType = Literal["RETRIEVAL_QUERY", "RETRIEVAL_DOCUMENT"]
 
+_NON_RETRYABLE_STATUS_CODES = {400, 401, 403}
+
+
+def _google_api_key() -> str:
+    api_key = settings.google_api_key.strip()
+    if not api_key:
+        raise RuntimeError("Google API key is missing (settings.google_api_key).")
+    return api_key
+
+
+def _google_api_headers(api_key: str) -> dict[str, str]:
+    # Prefer header-based auth so keys never appear in URLs.
+    return {"x-goog-api-key": api_key}
+
+
+def _post_google_embeddings(
+    client: httpx.Client, url: str, *, api_key: str, json: dict[str, object]
+) -> httpx.Response:
+    # Use header-based auth first. Some environments/key types may still require `?key=`.
+    response = client.post(url, headers=_google_api_headers(api_key), json=json)
+    if response.status_code == 401:
+        response = client.post(url, params={"key": api_key}, json=json)
+    return response
+
+
+def _raise_sanitized_http_status_error(exc: httpx.HTTPStatusError) -> None:
+    # Avoid leaking credentials if they were passed as query params.
+    request = exc.request
+    if isinstance(request, httpx.Request):
+        url = request.url
+        if "key" in url.params:
+            sanitized_params = [(k, v) for k, v in url.params.multi_items() if k != "key"]
+            sanitized_url = url.copy_with(params=sanitized_params)
+            sanitized_request = httpx.Request(request.method, sanitized_url)
+            raise httpx.HTTPStatusError(
+                f"Google embeddings request failed with HTTP {exc.response.status_code}",
+                request=sanitized_request,
+                response=exc.response,
+            ) from None
+    raise exc
+
 
 def embed_texts_google(
     texts: list[str],
@@ -73,10 +114,11 @@ def _embed_single_with_retry(
     url = f"{GOOGLE_API_BASE}/models/{model}:embedContent"
     payload = _embed_request_payload(text, model=model, task_type=task_type, dimensions=dimensions)
     backoff = INITIAL_BACKOFF_SECONDS
+    api_key = _google_api_key()
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = client.post(url, params={"key": settings.google_api_key}, json=payload)
+            response = _post_google_embeddings(client, url, api_key=api_key, json=payload)
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt == MAX_RETRIES - 1:
                     response.raise_for_status()
@@ -89,9 +131,11 @@ def _embed_single_with_retry(
             if not isinstance(values, list):
                 raise RuntimeError("Google embedContent response missing embedding.values")
             return values
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in _NON_RETRYABLE_STATUS_CODES:
+                _raise_sanitized_http_status_error(exc)
             if attempt == MAX_RETRIES - 1:
-                raise
+                _raise_sanitized_http_status_error(exc)
             time.sleep(backoff)
             backoff *= 2
         except httpx.RequestError:
@@ -119,10 +163,11 @@ def _embed_batch_with_retry(
         ]
     }
     backoff = INITIAL_BACKOFF_SECONDS
+    api_key = _google_api_key()
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = client.post(url, params={"key": settings.google_api_key}, json=payload)
+            response = _post_google_embeddings(client, url, api_key=api_key, json=payload)
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt == MAX_RETRIES - 1:
                     response.raise_for_status()
@@ -148,9 +193,11 @@ def _embed_batch_with_retry(
                     f"Google batchEmbedContents returned {len(vectors)} vectors for {len(texts)} texts"
                 )
             return vectors
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in _NON_RETRYABLE_STATUS_CODES:
+                _raise_sanitized_http_status_error(exc)
             if attempt == MAX_RETRIES - 1:
-                raise
+                _raise_sanitized_http_status_error(exc)
             time.sleep(backoff)
             backoff *= 2
         except httpx.RequestError:

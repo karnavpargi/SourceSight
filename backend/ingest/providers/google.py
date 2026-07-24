@@ -26,35 +26,14 @@ def _google_api_key() -> str:
 
 
 def _google_api_headers(api_key: str) -> dict[str, str]:
-    # Prefer header-based auth so keys never appear in URLs.
-    return {"x-goog-api-key": api_key}
+    # AI Studio keys (including AQ.* keys) authenticate via header, not ?key=.
+    return {"Content-Type": "application/json", "X-goog-api-key": api_key}
 
 
 def _post_google_embeddings(
     client: httpx.Client, url: str, *, api_key: str, json: dict[str, object]
 ) -> httpx.Response:
-    # Use header-based auth first. Some environments/key types may still require `?key=`.
-    response = client.post(url, headers=_google_api_headers(api_key), json=json)
-    if response.status_code == 401:
-        response = client.post(url, params={"key": api_key}, json=json)
-    return response
-
-
-def _raise_sanitized_http_status_error(exc: httpx.HTTPStatusError) -> None:
-    # Avoid leaking credentials if they were passed as query params.
-    request = exc.request
-    if isinstance(request, httpx.Request):
-        url = request.url
-        if "key" in url.params:
-            sanitized_params = [(k, v) for k, v in url.params.multi_items() if k != "key"]
-            sanitized_url = url.copy_with(params=sanitized_params)
-            sanitized_request = httpx.Request(request.method, sanitized_url)
-            raise httpx.HTTPStatusError(
-                f"Google embeddings request failed with HTTP {exc.response.status_code}",
-                request=sanitized_request,
-                response=exc.response,
-            ) from None
-    raise exc
+    return client.post(url, headers=_google_api_headers(api_key), json=json)
 
 
 def embed_texts_google(
@@ -133,9 +112,9 @@ def _embed_single_with_retry(
             return values
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in _NON_RETRYABLE_STATUS_CODES:
-                _raise_sanitized_http_status_error(exc)
+                raise
             if attempt == MAX_RETRIES - 1:
-                _raise_sanitized_http_status_error(exc)
+                raise
             time.sleep(backoff)
             backoff *= 2
         except httpx.RequestError:
@@ -195,9 +174,9 @@ def _embed_batch_with_retry(
             return vectors
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in _NON_RETRYABLE_STATUS_CODES:
-                _raise_sanitized_http_status_error(exc)
+                raise
             if attempt == MAX_RETRIES - 1:
-                _raise_sanitized_http_status_error(exc)
+                raise
             time.sleep(backoff)
             backoff *= 2
         except httpx.RequestError:

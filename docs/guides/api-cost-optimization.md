@@ -98,3 +98,20 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 ## Expected budget after change
 
 Typical turn: roughly **10k–25k input** and **under 2k output**, targeting **₹0.50–₹1** on current `gemini-3.5-flash-lite` pricing for this question class.
+
+## After optimization (measured 2026-07-24)
+
+Same Amazon AWS vs segment question on `feat/api-cost-optimization`:
+
+| Metric | Before | After (v2, pre-truncate) | Notes |
+|---|---|---|---|
+| Outcome | answered | grounding_refusal | Correction still failed citation markers |
+| Agent runs / corrections | 2 full re-runs | 1 + 1 correction (no re-retrieval) | Spec met for retry shape |
+| Passages | 17 | 8 | Cap met |
+| Input tokens | ~168k | ~81k | Still above 25k budget |
+| Output tokens | ~28k | ~6k | Still above 2k budget |
+| Cost (user-reported) | ₹8.13 | *ask user for delta* | |
+| Later fix | — | truncate evidence to 1200 chars; agent `retries=1` | Commit `e78ca0f`; re-measure blocked by Google `UsageLimitExceeded` |
+
+Success criteria not fully met yet on live traffic. Next: re-measure after quota resets; expect further drop from truncation + fewer retries.
+

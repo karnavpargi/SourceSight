@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel
 
 from app.config import CHAT_PROVIDERS, ChatProvider, settings
+from app.http_client import http_get
 
 GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -127,7 +128,7 @@ def build_providers_response() -> ChatProvidersResponse:
 def _fetch_ollama_models() -> list[ChatModelOption]:
     base = settings.ollama_base_url.rstrip("/")
     try:
-        response = httpx.get(f"{base}/api/tags", timeout=10.0)
+        response = http_get(f"{base}/api/tags", timeout=10.0)
         response.raise_for_status()
     except httpx.HTTPError:
         return []
@@ -150,7 +151,7 @@ def _fetch_google_models() -> list[ChatModelOption]:
     if not settings.google_api_key.strip():
         return []
 
-    response = httpx.get(
+    response = http_get(
         GOOGLE_MODELS_URL,
         headers={"X-goog-api-key": settings.google_api_key},
         timeout=10.0,
@@ -178,7 +179,7 @@ def _fetch_opencode_models() -> list[ChatModelOption]:
         return []
 
     base = settings.opencode_base_url.rstrip("/")
-    response = httpx.get(
+    response = http_get(
         f"{base}/models",
         headers={"Authorization": f"Bearer {settings.opencode_api_key}"},
         timeout=10.0,

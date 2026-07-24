@@ -90,7 +90,6 @@ def _vector_search_hits(
 ) -> list[RankedChunkHit]:
     if settings.embedding_provider == "none":
         return []
-
     try:
         query_embedding = embed_fn(query)
     except httpx.HTTPError:

@@ -7,6 +7,7 @@ import time
 import httpx
 
 from app.config import settings
+from app.http_client import get_sync_client
 
 MAX_RETRIES = 5
 INITIAL_BACKOFF_SECONDS = 1.0
@@ -23,14 +24,14 @@ def embed_texts_ollama(
 
     embeddings: list[list[float]] = []
     owns_client = client is None
-    http_client = client or httpx.Client(timeout=120.0)
+    http_client = client or get_sync_client()
 
     try:
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]
             embeddings.extend(_embed_batch_with_retry(http_client, batch))
     finally:
-        if owns_client:
+        if owns_client and http_client is not get_sync_client():
             http_client.close()
 
     return embeddings

@@ -9,7 +9,13 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.retrieval.types import SourcePassage
 
-__all__ = ["Citation", "GroundedAnswer", "SourcePassage"]
+__all__ = [
+    "Citation",
+    "DraftCitation",
+    "GroundedAnswer",
+    "GroundedDraft",
+    "SourcePassage",
+]
 
 
 class Citation(BaseModel):
@@ -26,6 +32,28 @@ class Citation(BaseModel):
         min_length=1,
         description="Quoted passage text supporting the cited claim.",
     )
+
+
+class DraftCitation(BaseModel):
+    """Turn-local citation draft referencing evidence by alias."""
+
+    citation_index: int = Field(ge=1)
+    evidence_alias: str = Field(min_length=2, description="Turn-local alias like E1.")
+    excerpt: str = Field(min_length=1)
+
+
+class GroundedDraft(BaseModel):
+    """Agent output before server resolves evidence aliases to chunk UUIDs."""
+
+    answer: str = Field(min_length=1)
+    citations: list[DraftCitation] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def citation_indices_are_unique(self) -> Self:
+        indices = [c.citation_index for c in self.citations]
+        if len(indices) != len(set(indices)):
+            raise ValueError("citation_index values must be unique within an answer")
+        return self
 
 
 class GroundedAnswer(BaseModel):

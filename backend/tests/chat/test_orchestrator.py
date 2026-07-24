@@ -8,10 +8,8 @@ from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import pytest
-from pydantic_ai import ModelMessage, ModelResponse, ToolCallPart, models
+from pydantic_ai import models
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import TextPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from app.assistant.agent import document_agent
 from app.assistant.evidence import EvidenceRegistry
@@ -92,39 +90,6 @@ class RecordingValidator:
         self.received_passages = retrieved_passages
         if self.should_fail:
             raise GroundingError("ungrounded answer")
-
-
-def _grounded_answer_model() -> FunctionModel:
-    step = 0
-
-    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        nonlocal step
-        step += 1
-        if step == 1:
-            return ModelResponse(
-                parts=[ToolCallPart("search_filings", {"query": "AWS operating income"})]
-            )
-        return ModelResponse(
-            parts=[
-                TextPart(
-                    json.dumps(
-                        {
-                            "answer": "AWS operating income rose [1].",
-                            "citations": [
-                                {
-                                    "citation_index": 1,
-                                    "chunk_id": str(CHUNK_ID),
-                                    "excerpt": "AWS operating income increased.",
-                                }
-                            ],
-                            "cited_passages": [_passage().model_dump(mode="json")],
-                        }
-                    )
-                )
-            ]
-        )
-
-    return FunctionModel(model_fn)
 
 
 async def _collect(response) -> str:

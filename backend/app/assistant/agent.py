@@ -88,12 +88,24 @@ def _search_filings_impl(
 ) -> list[CompactEvidence]:
     """Core implementation for the search_filings tool."""
     budget = deps.budget
-    if deps.search_count >= budget.max_searches:
+
+    # Correction runs must not perform additional retrieval, and a zero-search
+    # budget disables searching entirely.
+    if budget.max_searches <= 0 or getattr(deps, "correction_mode", False):
         return []
-    cleaned = [q.strip() for q in queries if q and q.strip()][: budget.max_searches]
+
+    # Clean and cap queries against the remaining per-turn budget.
+    remaining = max(budget.max_searches - deps.search_count, 0)
+    if remaining <= 0:
+        return []
+
+    cleaned = [q.strip() for q in queries if q and q.strip()][:remaining]
     if not cleaned:
         return []
-    deps.search_count += 1
+
+    # Track total cleaned queries issued this turn.
+    deps.search_count += len(cleaned)
+
     passages = deps.retriever.search_filings_batch(
         cleaned,
         limit_per_query=budget.max_hits_per_search,

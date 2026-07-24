@@ -61,6 +61,13 @@ class EvidenceRegistry:
     def all_passages(self) -> list[SourcePassage]:
         return list(self._by_alias.values())
 
+    def compact_dump(self) -> list[CompactEvidence]:
+        """Return compact rows for all registered aliases.
+
+        The compact rows use truncated content suitable for passing back to the model.
+        """
+        return [self._to_compact(alias, passage) for alias, passage in self._by_alias.items()]
+
     def _to_compact(self, alias: str, passage: SourcePassage) -> CompactEvidence:
         return CompactEvidence(
             alias=alias,

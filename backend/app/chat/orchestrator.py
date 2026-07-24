@@ -683,19 +683,10 @@ async def _run_citation_correction(
 ) -> GroundedDraft:
     """Run a no-retrieval correction pass to fix citations."""
 
-    # Build a compact dump of existing evidence keyed by alias.
-    compact: list[dict[str, object]] = []
-    for alias, passage in getattr(evidence, "_by_alias", {}).items():
-        compact.append(
-            {
-                "alias": alias,
-                "content": passage.content,
-                "ticker": passage.ticker,
-                "fiscal_year": passage.fiscal_year,
-                "section": passage.section,
-            }
-        )
-    evidence_json = json.dumps(compact, ensure_ascii=False)
+    # Build a compact dump of existing evidence keyed by alias, using the
+    # already-truncated content intended for model consumption.
+    compact_rows = [row.model_dump() for row in evidence.compact_dump()]
+    evidence_json = json.dumps(compact_rows, ensure_ascii=False)
 
     correction_prompt = (
         f"{user_text}\n\n---\n"
@@ -758,6 +749,7 @@ async def _run_citation_correction(
         evidence=evidence,
         usage=usage,
         budget=budget,
+        correction_mode=True,
     )
 
     agent_model = build_document_agent_model(chat_model.provider, chat_model.model)

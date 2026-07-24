@@ -68,4 +68,8 @@ class DocumentAgentDeps:
     evidence: EvidenceRegistry
     usage: TurnUsage
     budget: TurnBudget = DEFAULT_TURN_BUDGET
+    # Total cleaned search queries issued this turn.
     search_count: int = 0
+    # When True, the agent is running a correction-only pass and must not
+    # perform additional retrieval (search_filings should no-op).
+    correction_mode: bool = False

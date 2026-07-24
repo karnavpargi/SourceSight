@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
@@ -20,7 +21,9 @@ from app.chat.orchestrator import (
     REFUSAL_MESSAGE,
     model_unavailable_message,
     run_chat_turn,
+    _run_citation_correction,
 )
+from app.chat.turn_budget import DEFAULT_TURN_BUDGET
 from app.grounding.validator import GroundingError, grounding_validator
 from app.database.chats import ChatMessageRecord
 from app.chat.usage import TurnUsage
@@ -715,4 +718,79 @@ async def test_run_chat_turn_streams_model_unavailable_message() -> None:
     assert _assembled_text(body) == quota_message
     contents = [call.kwargs["content"] for call in append.await_args_list]
     assert contents == ["How did AWS operating income change?", quota_message]
+
+
+@pytest.mark.anyio
+async def test_correction_evidence_dump_uses_truncated_content() -> None:
+    """Correction prompt should include truncated evidence content, not full passages."""
+    long_content = "x" * 2000
+    evidence = EvidenceRegistry()
+    # Register a single long passage so the registry assigns alias E1.
+    passage = _passage()
+    passage = SourcePassage(
+        chunk_id=passage.chunk_id,
+        document_id=passage.document_id,
+        chunk_index=passage.chunk_index,
+        content=long_content,
+        section=passage.section,
+        ticker=passage.ticker,
+        company_name=passage.company_name,
+        form_type=passage.form_type,
+        fiscal_year=passage.fiscal_year,
+        accession_number=passage.accession_number,
+        filing_date=passage.filing_date,
+        source_url=passage.source_url,
+        score=passage.score,
+    )
+    evidence.register([passage])
+
+    usage = TurnUsage()
+    captured_prompt = None
+
+    async def fake_run(prompt, *, deps, model_settings, event_stream_handler=None):  # type: ignore[override]
+        nonlocal captured_prompt
+        captured_prompt = prompt
+
+        class DummyRun:
+            output = GroundedDraft(answer="fixed", citations=[])
+
+        return DummyRun()
+
+    with patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.build_model_settings",
+        return_value={"max_tokens": DEFAULT_TURN_BUDGET.max_output_tokens},
+    ), patch(
+        "app.chat.orchestrator.document_agent.override",
+        side_effect=lambda *args, **kwargs: nullcontext(),
+    ), patch(
+        "app.chat.orchestrator.document_agent.run",
+        side_effect=fake_run,
+    ), patch(
+        "app.chat.orchestrator._token_usage_fields",
+        return_value={"input_tokens": 0, "output_tokens": 0},
+    ):
+        await _run_citation_correction(
+            user_text="Q",
+            failed_draft_answer="A",
+            grounding_error="error",
+            evidence=evidence,
+            chat_model=TEST_CHAT_MODEL,
+            generation=TEST_GENERATION,
+            usage=usage,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+        )
+
+    assert captured_prompt is not None
+    marker = "Here is the evidence you may cite, keyed by alias:\n"
+    start = captured_prompt.index(marker) + len(marker)
+    end = captured_prompt.index("\n\nRewrite the answer", start)
+    evidence_json = captured_prompt[start:end]
+    rows = json.loads(evidence_json)
+    assert len(rows) == 1
+    assert rows[0]["alias"] == "E1"
+    assert len(rows[0]["content"]) <= 1200
 

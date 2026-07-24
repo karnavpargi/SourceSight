@@ -70,3 +70,21 @@ def test_registry_rejects_unknown_alias() -> None:
         raise AssertionError("expected KeyError")
     except KeyError:
         pass
+
+
+def test_registry_compact_dump_returns_all_compact_rows() -> None:
+    registry = EvidenceRegistry()
+    p1 = _passage("one")
+    p2 = _passage("two")
+    registry.register([p1, p2])
+
+    compact = registry.compact_dump()
+    aliases = [row.alias for row in compact]
+    assert aliases == ["E1", "E2"]
+    # compact_dump should use truncated content, not the full passage for long inputs.
+    long_passage = _passage(content="x" * 2000)
+    registry = EvidenceRegistry()
+    registry.register([long_passage])
+    dumped = registry.compact_dump()
+    assert len(dumped) == 1
+    assert len(dumped[0].content) <= 1200

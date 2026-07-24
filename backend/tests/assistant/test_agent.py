@@ -154,6 +154,7 @@ def test_search_filings_tool_returns_compact_aliases_without_chunk_id() -> None:
         usage=usage,
         retriever=retriever,
         search_count=0,
+        correction_mode=False,
     )
 
     result = _search_filings_impl(deps, ["AMZN AWS operating income 2024"])
@@ -166,4 +167,71 @@ def test_search_filings_tool_returns_compact_aliases_without_chunk_id() -> None:
     assert any(row["alias"].startswith("E") for row in dumped)
     # Embedding usage is approximated as one call per cleaned query when embeddings are enabled.
     assert usage.embedding_calls == 1
+
+
+def test_search_filings_respects_query_budget_across_turn() -> None:
+    evidence = EvidenceRegistry()
+    usage = TurnUsage()
+
+    class RecordingBatchRetriever:
+        def __init__(self) -> None:
+            self.queries: list[list[str]] = []
+
+        def search_filings_batch(
+            self,
+            queries: list[str],
+            *,
+            limit_per_query: int = 5,
+        ) -> list[SourcePassage]:
+            self.queries.append(queries)
+            return [_sample_passage()]
+
+    retriever = RecordingBatchRetriever()
+    deps = SimpleNamespace(
+        budget=DEFAULT_TURN_BUDGET,
+        evidence=evidence,
+        usage=usage,
+        retriever=retriever,
+        search_count=0,
+        correction_mode=False,
+    )
+
+    # DEFAULT_TURN_BUDGET.max_searches == 3; total cleaned queries across calls
+    # must not exceed this value.
+    _search_filings_impl(deps, ["q1", "q2"])
+    _search_filings_impl(deps, ["q3", "q4"])
+    third = _search_filings_impl(deps, ["q5"])
+
+    # First call uses both queries, second call is capped to one remaining query,
+    # and the third call is a no-op.
+    assert retriever.queries == [["q1", "q2"], ["q3"]]
+    assert third == []
+    assert deps.search_count == DEFAULT_TURN_BUDGET.max_searches
+
+
+def test_search_filings_noops_during_correction_mode() -> None:
+    evidence = EvidenceRegistry()
+    usage = TurnUsage()
+
+    class FailingBatchRetriever:
+        def search_filings_batch(
+            self,
+            queries: list[str],
+            *,
+            limit_per_query: int = 5,
+        ) -> list[SourcePassage]:
+            raise AssertionError("retriever should not be called during correction")
+
+    retriever = FailingBatchRetriever()
+    deps = SimpleNamespace(
+        budget=DEFAULT_TURN_BUDGET,
+        evidence=evidence,
+        usage=usage,
+        retriever=retriever,
+        search_count=0,
+        correction_mode=True,
+    )
+
+    result = _search_filings_impl(deps, ["AMZN AWS operating income 2024"])
+    assert result == []
 

@@ -10,6 +10,7 @@ session inside the background agent task so streaming stays concurrent-safe.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -24,7 +25,9 @@ from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from app.assistant.agent import build_document_agent_model, document_agent
 from app.assistant.deps import DocumentAgentDeps, DocumentRetriever, GroundingValidator
-from app.assistant.outputs import GroundedAnswer
+from app.assistant.evidence import EvidenceRegistry
+from app.assistant.finalize import finalize_grounded_draft
+from app.assistant.outputs import GroundedAnswer, GroundedDraft
 from app.chat.activity_summary import group_activity_steps, merge_activity_log
 from app.chat.agent_events import agent_event_stream_handler
 from app.chat.generation import (
@@ -35,6 +38,8 @@ from app.chat.models_catalog import ResolvedChatModel
 from app.chat.messages import TurnActivityData
 from app.chat.persistence import assistant_answer_to_wire
 from app.chat.turn_activity import TurnActivityEmitter
+from app.chat.turn_budget import DEFAULT_TURN_BUDGET, TurnBudget
+from app.chat.usage import TurnUsage
 from app.chat.streaming import (
     format_activity_event,
     format_progress_event,
@@ -141,8 +146,13 @@ def _log_turn_complete(
     model: str,
     started_at: float,
     citation_count: int = 0,
+    usage: TurnUsage | None = None,
     **extra: object,
 ) -> None:
+    usage_fields: dict[str, int] = {}
+    if usage is not None:
+        usage_fields = usage.as_log_fields()
+
     logger.info(
         "chat.turn_complete",
         outcome=outcome,
@@ -150,6 +160,7 @@ def _log_turn_complete(
         model=model,
         latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
         citation_count=citation_count,
+        **usage_fields,
         **extra,
     )
 
@@ -170,6 +181,27 @@ class _RecordingRetriever:
         detail = f"{hit_count} passage{'s' if hit_count != 1 else ''} found"
         self._update("Analyzing retrieved passages...", detail=detail)
         return result
+
+    def search_filings_batch(
+        self,
+        queries: list[str],
+        *,
+        limit_per_query: int = 5,
+    ) -> list[SourcePassage]:
+        joined = " | ".join(q for q in queries if q)
+        self._update(
+            "Searching indexed filings...",
+            detail=joined or None,
+        )
+        passages = self.inner.search_filings_batch(
+            queries,
+            limit_per_query=limit_per_query,
+        )
+        self._record(passages)
+        hit_count = len(passages)
+        detail = f"{hit_count} passage{'s' if hit_count != 1 else ''} found"
+        self._update("Analyzing retrieved passages...", detail=detail)
+        return passages
 
     def read_chunk(self, chunk_id: UUID) -> SourcePassage:
         cached = self.seen.get(chunk_id)
@@ -297,6 +329,8 @@ async def _stream_chat_turn(
     activity = TurnActivityEmitter()
     activity_log: list[TurnActivityData] = []
     last_progress = "Analyzing your question..."
+    usage: TurnUsage | None = None
+    evidence: EvidenceRegistry | None = None
 
     def emit_activity_updates() -> list[str]:
         nonlocal last_progress
@@ -339,7 +373,7 @@ async def _stream_chat_turn(
             yield event
             await asyncio.sleep(0)
 
-        answer, retrieved_passages = agent_task.result()
+        answer, retrieved_passages, evidence, usage = agent_task.result()
         for event in emit_activity_updates():
             yield event
             await asyncio.sleep(0)
@@ -372,6 +406,7 @@ async def _stream_chat_turn(
             provider=chat_model.provider,
             model=chat_model.model,
             started_at=turn_started,
+            usage=usage,
         )
         return
     except Exception as exc:
@@ -402,6 +437,7 @@ async def _stream_chat_turn(
             model=chat_model.model,
             started_at=turn_started,
             error_type=type(exc).__name__,
+            usage=usage,
         )
         return
 
@@ -419,9 +455,14 @@ async def _stream_chat_turn(
         )
     except GroundingError as exc:
         grounding_error = exc
-        if answer.citations and retrieved_passages:
+        if (
+            answer.citations
+            and retrieved_passages
+            and evidence is not None
+            and usage is not None
+        ):
             logger.info(
-                "chat.grounding_retry",
+                "chat.grounding_correction",
                 reason=str(exc),
                 retrieved_passage_count=len(retrieved_passages),
                 citation_count=len(answer.citations),
@@ -429,17 +470,19 @@ async def _stream_chat_turn(
                 model=chat_model.model,
             )
             try:
-                answer, retrieved_passages = await _run_agent_grounding_retry(
-                    user_text,
+                draft = await _run_citation_correction(
+                    user_text=user_text,
+                    failed_draft_answer=answer.answer,
                     grounding_error=str(exc),
-                    user_id=user_id,
-                    thread_id=thread_id,
+                    evidence=evidence,
                     chat_model=chat_model,
                     generation=generation,
-                    grounding_validator=grounding_validator,
-                    retriever=retriever,
-                    activity=activity,
+                    usage=usage,
+                    user_id=user_id,
+                    thread_id=thread_id,
                 )
+                answer = finalize_grounded_draft(draft, evidence)
+                retrieved_passages = evidence.all_passages()
                 answer = _finalize_grounded_answer(
                     answer,
                     retrieved_passages,
@@ -482,6 +525,7 @@ async def _stream_chat_turn(
             provider=chat_model.provider,
             model=chat_model.model,
             started_at=turn_started,
+            usage=usage,
         )
         return
 
@@ -516,6 +560,7 @@ async def _stream_chat_turn(
         model=chat_model.model,
         started_at=turn_started,
         citation_count=len(answer.citations),
+        usage=usage,
     )
 
 
@@ -529,35 +574,6 @@ def _finalize_grounded_answer(
     return answer
 
 
-async def _run_agent_grounding_retry(
-    user_text: str,
-    *,
-    grounding_error: str,
-    user_id: UUID,
-    thread_id: UUID,
-    chat_model: ResolvedChatModel,
-    generation: ChatGenerationConfig,
-    grounding_validator: GroundingValidator,
-    retriever: DocumentRetriever | None,
-    activity: TurnActivityEmitter | None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
-    retry_prompt = (
-        f"{user_text}\n\n---\n"
-        f"Your previous answer failed grounding validation: {grounding_error}\n"
-        f"{_GROUNDING_RETRY_FEEDBACK}"
-    )
-    return await _run_agent(
-        retry_prompt,
-        user_id=user_id,
-        thread_id=thread_id,
-        chat_model=chat_model,
-        generation=generation,
-        grounding_validator=grounding_validator,
-        activity=activity,
-        retriever=retriever,
-    )
-
-
 async def _run_agent(
     user_text: str,
     *,
@@ -568,12 +584,12 @@ async def _run_agent(
     grounding_validator: GroundingValidator,
     activity: TurnActivityEmitter | None = None,
     retriever: DocumentRetriever | None = None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
+) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
     if activity is not None:
         activity.start_thinking(f"Thinking with {chat_model.model}...")
 
     inner = retriever if retriever is not None else SessionPerCallDocumentRetriever()
-    return await _run_agent_with_retriever(
+    answer, passages, evidence, usage = await _run_agent_with_retriever(
         user_text,
         user_id=user_id,
         thread_id=thread_id,
@@ -583,6 +599,9 @@ async def _run_agent(
         retriever=inner,
         activity=activity,
     )
+    if activity is not None:
+        activity.end_thinking()
+    return answer, passages, evidence, usage
 
 
 async def _run_agent_with_retriever(
@@ -595,19 +614,28 @@ async def _run_agent_with_retriever(
     grounding_validator: GroundingValidator,
     retriever: DocumentRetriever,
     activity: TurnActivityEmitter | None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
+) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
     recording_retriever = _RecordingRetriever(
         inner=retriever,
         activity=activity,
     )
+    budget: TurnBudget = DEFAULT_TURN_BUDGET
+    evidence = EvidenceRegistry(max_passages=budget.max_unique_passages)
+    usage = TurnUsage()
     deps = DocumentAgentDeps(
         user_id=user_id,
         thread_id=thread_id,
         retriever=recording_retriever,
         grounding_validator=grounding_validator,
+        evidence=evidence,
+        usage=usage,
+        budget=budget,
     )
     agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
-    model_settings = build_model_settings(generation)
+    model_settings = build_model_settings(
+        generation,
+        max_tokens=budget.max_output_tokens,
+    )
 
     async def event_handler(ctx, events):
         if activity is None:
@@ -628,16 +656,137 @@ async def _run_agent_with_retriever(
             model_settings=model_settings,
             event_stream_handler=event_handler if activity is not None else None,
         )
-    if activity is not None:
-        activity.end_thinking()
+    usage.add_model_usage(**_token_usage_fields(run))
     logger.info(
         "chat.agent_complete",
         provider=chat_model.provider,
         model=chat_model.model,
         retrieved_passage_count=len(recording_retriever.retrieved_passages),
-        **_token_usage_fields(run),
+        **usage.as_log_fields(),
     )
-    return run.output, recording_retriever.retrieved_passages
+    draft = run.output
+    answer = finalize_grounded_draft(draft, evidence)
+    return answer, recording_retriever.retrieved_passages, evidence, usage
+
+
+async def _run_citation_correction(
+    *,
+    user_text: str,
+    failed_draft_answer: str,
+    grounding_error: str,
+    evidence: EvidenceRegistry,
+    chat_model: ResolvedChatModel,
+    generation: ChatGenerationConfig,
+    usage: TurnUsage,
+    user_id: UUID,
+    thread_id: UUID,
+) -> GroundedDraft:
+    """Run a no-retrieval correction pass to fix citations."""
+
+    # Build a compact dump of existing evidence keyed by alias.
+    compact: list[dict[str, object]] = []
+    for alias, passage in getattr(evidence, "_by_alias", {}).items():
+        compact.append(
+            {
+                "alias": alias,
+                "content": passage.content,
+                "ticker": passage.ticker,
+                "fiscal_year": passage.fiscal_year,
+                "section": passage.section,
+            }
+        )
+    evidence_json = json.dumps(compact, ensure_ascii=False)
+
+    correction_prompt = (
+        f"{user_text}\n\n---\n"
+        "Your previous answer failed grounding validation.\n"
+        f"Error: {grounding_error}\n\n"
+        "Here is your previous answer:\n"
+        f"{failed_draft_answer}\n\n"
+        "Here is the evidence you may cite, keyed by alias:\n"
+        f"{evidence_json}\n\n"
+        "Rewrite the answer so that every sentence containing $, %, or numeric amounts "
+        "has an inline [n] citation marker whose record matches one of the aliases "
+        "above. Do not call tools or retrieve new documents. Only adjust wording and "
+        "citations using this fixed evidence set."
+    )
+
+    # Disable additional retrieval during correction.
+    class _DisabledRetriever:
+        def search_filings(self, query: str, *, limit: int = 10) -> RetrievalResult:
+            raise RuntimeError("retrieval disabled during correction")
+
+        def search_filings_batch(
+            self,
+            queries: list[str],
+            *,
+            limit_per_query: int = 5,
+        ) -> list[SourcePassage]:
+            raise RuntimeError("retrieval disabled during correction")
+
+        def read_chunk(self, chunk_id: UUID) -> SourcePassage:
+            raise RuntimeError("retrieval disabled during correction")
+
+        def read_surrounding_chunks(
+            self,
+            chunk_id: UUID,
+            *,
+            window: int = 1,
+        ) -> list[SourcePassage]:
+            raise RuntimeError("retrieval disabled during correction")
+
+    class _NoOpValidator:
+        def validate(
+            self,
+            answer: GroundedAnswer,
+            retrieved_passages: list[SourcePassage],
+        ) -> None:
+            return None
+
+    budget = TurnBudget(
+        max_searches=0,
+        max_hits_per_search=DEFAULT_TURN_BUDGET.max_hits_per_search,
+        max_unique_passages=DEFAULT_TURN_BUDGET.max_unique_passages,
+        max_output_tokens=DEFAULT_TURN_BUDGET.max_output_tokens,
+        max_corrections=DEFAULT_TURN_BUDGET.max_corrections,
+    )
+    deps = DocumentAgentDeps(
+        user_id=user_id,
+        thread_id=thread_id,
+        retriever=_DisabledRetriever(),
+        grounding_validator=_NoOpValidator(),
+        evidence=evidence,
+        usage=usage,
+        budget=budget,
+    )
+
+    agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
+    model_settings = build_model_settings(
+        generation,
+        max_tokens=budget.max_output_tokens,
+    )
+
+    with document_agent.override(model=agent_model):
+        run = await document_agent.run(
+            correction_prompt,
+            deps=deps,
+            model_settings=model_settings,
+            event_stream_handler=None,
+        )
+
+    usage.record_correction()
+    usage.add_model_usage(**_token_usage_fields(run))
+
+    logger.info(
+        "chat.agent_complete",
+        provider=chat_model.provider,
+        model=chat_model.model,
+        retrieved_passage_count=len(evidence.all_passages()),
+        correction=True,
+        **usage.as_log_fields(),
+    )
+
+    return run.output
 
 
 async def _persist_assistant_answer(

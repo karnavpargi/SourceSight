@@ -14,7 +14,8 @@ from pydantic_ai.messages import TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from app.assistant.agent import document_agent
-from app.assistant.outputs import Citation, GroundedAnswer
+from app.assistant.evidence import EvidenceRegistry
+from app.assistant.outputs import Citation, GroundedAnswer, GroundedDraft
 from app.chat.generation import ChatGenerationConfig
 from app.chat.models_catalog import ResolvedChatModel
 from app.chat.orchestrator import (
@@ -24,6 +25,7 @@ from app.chat.orchestrator import (
 )
 from app.grounding.validator import GroundingError, grounding_validator
 from app.database.chats import ChatMessageRecord
+from app.chat.usage import TurnUsage
 from app.retrieval.types import RetrievalResult, SourcePassage
 
 models.ALLOW_MODEL_REQUESTS = False
@@ -195,17 +197,19 @@ async def _fake_run_agent(
     thread_id: UUID,
     chat_model: ResolvedChatModel,
     generation: ChatGenerationConfig,
-    grounding_validator,
+    grounding_validator,  # unused in stub
     activity=None,
     retriever=None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
+) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
     if activity is not None:
         activity.start_thinking(f"Thinking with {chat_model.model}...")
     if retriever is not None:
         retriever.search_filings(user_text)
     if activity is not None:
         activity.end_thinking()
-    return _grounded_answer(), [_passage()]
+    evidence = EvidenceRegistry()
+    usage = TurnUsage()
+    return _grounded_answer(), [_passage()], evidence, usage
 
 
 @pytest.mark.anyio
@@ -300,19 +304,23 @@ async def _fake_run_agent_ungrounded(
     thread_id: UUID,
     chat_model: ResolvedChatModel,
     generation: ChatGenerationConfig,
-    grounding_validator,
+    grounding_validator,  # unused in stub
     activity=None,
     retriever=None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
+) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
     if activity is not None:
         activity.start_thinking(f"Thinking with {chat_model.model}...")
     if retriever is not None:
         retriever.search_filings(user_text)
     if activity is not None:
         activity.end_thinking()
+    evidence = EvidenceRegistry()
+    usage = TurnUsage()
     return (
         GroundedAnswer(answer="AWS operating income rose sharply without evidence."),
         [_passage()],
+        evidence,
+        usage,
     )
 
 
@@ -326,6 +334,10 @@ async def test_run_chat_turn_refuses_on_grounding_failure() -> None:
     attach = AsyncMock(return_value=[])
     update_message_data = AsyncMock(return_value=_appended_message())
 
+    async def fake_run_correction(**kwargs) -> GroundedDraft:  # type: ignore[override]
+        # Return a corrective draft with the same answer text; validator will still fail.
+        return GroundedDraft(answer=_grounded_answer().answer, citations=[])
+
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
         "app.chat.orchestrator.chat_store.attach_citations", new=attach
     ), patch(
@@ -337,6 +349,9 @@ async def test_run_chat_turn_refuses_on_grounding_failure() -> None:
     ), patch(
         "app.chat.orchestrator._run_agent",
         side_effect=_fake_run_agent,
+    ), patch(
+        "app.chat.orchestrator._run_citation_correction",
+        side_effect=fake_run_correction,
     ):
         response = await run_chat_turn(
             client,
@@ -439,12 +454,19 @@ def _apple_mix_fixed_answer() -> GroundedAnswer:
 
 
 @pytest.mark.anyio
-async def test_run_chat_turn_retries_partial_grounding_failure() -> None:
+async def test_grounding_failure_uses_one_correction_without_extra_retrieval() -> None:
+    """On grounding failure, run exactly one correction without re-running the agent."""
     retriever = StubRetriever(passages=[_passage()])
     client = object()
-    call_count = 0
 
-    async def _fake_run_agent_retry(
+    append = AsyncMock(return_value=_appended_message())
+    attach = AsyncMock(return_value=[])
+    update_message_data = AsyncMock(return_value=_appended_message())
+
+    initial_answer = _apple_mix_bad_answer()
+    corrected = _apple_mix_fixed_answer()
+
+    async def fake_run_agent(
         user_text: str,
         *,
         user_id: UUID,
@@ -454,27 +476,44 @@ async def test_run_chat_turn_retries_partial_grounding_failure() -> None:
         grounding_validator,
         activity=None,
         retriever=None,
-    ) -> tuple[GroundedAnswer, list[SourcePassage]]:
-        nonlocal call_count
-        call_count += 1
-        if activity is not None:
-            activity.start_thinking(f"Thinking with {chat_model.model}...")
-        if retriever is not None:
-            retriever.search_filings(user_text)
-        if activity is not None:
-            activity.end_thinking()
-        if call_count == 1:
-            return _apple_mix_bad_answer(), [_passage()]
-        assert "failed grounding validation" in user_text
-        assert "Uncited segment" in user_text
-        return _apple_mix_fixed_answer(), [_passage()]
+    ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
+        evidence = EvidenceRegistry()
+        usage = TurnUsage()
+        return initial_answer, [_passage()], evidence, usage
 
-    append = AsyncMock(return_value=_appended_message())
-    attach = AsyncMock(return_value=[])
-    update_message_data = AsyncMock(return_value=_appended_message())
+    finalize_calls = 0
+
+    def fake_finalize_answer(
+        answer: GroundedAnswer,
+        retrieved_passages: list[SourcePassage],
+        validator,
+    ) -> GroundedAnswer:
+        nonlocal finalize_calls
+        finalize_calls += 1
+        if finalize_calls == 1:
+            raise GroundingError("Uncited segment")
+        return answer
+
+    correction_calls: list[tuple[str, str]] = []
+
+    async def fake_run_correction(
+        *,
+        user_text: str,
+        failed_draft_answer: str,
+        grounding_error: str,
+        evidence: EvidenceRegistry,
+        chat_model: ResolvedChatModel,
+        generation: ChatGenerationConfig,
+        usage: TurnUsage,
+        user_id: UUID,
+        thread_id: UUID,
+    ) -> GroundedDraft:
+        correction_calls.append((failed_draft_answer, grounding_error))
+        return GroundedDraft(answer=corrected.answer, citations=[])
 
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
-        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+        "app.chat.orchestrator.chat_store.attach_citations",
+        new=attach,
     ), patch(
         "app.chat.orchestrator.chat_store.update_message_data",
         new=update_message_data,
@@ -483,7 +522,13 @@ async def test_run_chat_turn_retries_partial_grounding_failure() -> None:
         new=AsyncMock(),
     ), patch(
         "app.chat.orchestrator._run_agent",
-        side_effect=_fake_run_agent_retry,
+        side_effect=fake_run_agent,
+    ) as run_agent_mock, patch(
+        "app.chat.orchestrator._finalize_grounded_answer",
+        side_effect=fake_finalize_answer,
+    ), patch(
+        "app.chat.orchestrator._run_citation_correction",
+        side_effect=fake_run_correction,
     ):
         response = await run_chat_turn(
             client,
@@ -498,19 +543,27 @@ async def test_run_chat_turn_retries_partial_grounding_failure() -> None:
         )
         body = await _collect(response)
 
-    assert call_count == 2
-    assert "18.7% to 24% [1]" in _assembled_text(body)
-    assert REFUSAL_MESSAGE not in body
+    assert _assembled_text(body) == corrected.answer
+    assert finalize_calls == 2  # initial + correction
+    assert len(correction_calls) == 1
+    assert run_agent_mock.await_count == 1
     attach.assert_awaited_once()
     update_message_data.assert_awaited_once()
 
 
 @pytest.mark.anyio
-async def test_run_chat_turn_refuses_after_grounding_retry_fails() -> None:
+async def test_grounding_correction_failure_refuses() -> None:
+    """If correction still fails grounding, refuse with no second agent run."""
     retriever = StubRetriever(passages=[_passage()])
     client = object()
 
-    async def _fake_run_agent_always_bad(
+    append = AsyncMock(return_value=_appended_message())
+    attach = AsyncMock(return_value=[])
+    update_message_data = AsyncMock(return_value=_appended_message())
+
+    initial_answer = _apple_mix_bad_answer()
+
+    async def fake_run_agent(
         user_text: str,
         *,
         user_id: UUID,
@@ -520,21 +573,28 @@ async def test_run_chat_turn_refuses_after_grounding_retry_fails() -> None:
         grounding_validator,
         activity=None,
         retriever=None,
-    ) -> tuple[GroundedAnswer, list[SourcePassage]]:
-        if activity is not None:
-            activity.start_thinking(f"Thinking with {chat_model.model}...")
-        if retriever is not None:
-            retriever.search_filings(user_text)
-        if activity is not None:
-            activity.end_thinking()
-        return _apple_mix_bad_answer(), [_passage()]
+    ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
+        evidence = EvidenceRegistry()
+        usage = TurnUsage()
+        return initial_answer, [_passage()], evidence, usage
 
-    append = AsyncMock(return_value=_appended_message())
-    attach = AsyncMock(return_value=[])
-    update_message_data = AsyncMock(return_value=_appended_message())
+    finalize_calls = 0
+
+    def always_fail_finalize(
+        answer: GroundedAnswer,
+        retrieved_passages: list[SourcePassage],
+        validator,
+    ) -> GroundedAnswer:
+        nonlocal finalize_calls
+        finalize_calls += 1
+        raise GroundingError("still ungrounded")
+
+    async def fake_run_correction(**kwargs) -> GroundedDraft:  # type: ignore[override]
+        return GroundedDraft(answer=initial_answer.answer, citations=[])
 
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
-        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+        "app.chat.orchestrator.chat_store.attach_citations",
+        new=attach,
     ), patch(
         "app.chat.orchestrator.chat_store.update_message_data",
         new=update_message_data,
@@ -543,8 +603,14 @@ async def test_run_chat_turn_refuses_after_grounding_retry_fails() -> None:
         new=AsyncMock(),
     ), patch(
         "app.chat.orchestrator._run_agent",
-        side_effect=_fake_run_agent_always_bad,
-    ):
+        side_effect=fake_run_agent,
+    ) as run_agent_mock, patch(
+        "app.chat.orchestrator._finalize_grounded_answer",
+        side_effect=always_fail_finalize,
+    ), patch(
+        "app.chat.orchestrator._run_citation_correction",
+        side_effect=fake_run_correction,
+    ) as correction_mock:
         response = await run_chat_turn(
             client,
             user_id=USER_ID,
@@ -559,18 +625,20 @@ async def test_run_chat_turn_refuses_after_grounding_retry_fails() -> None:
         body = await _collect(response)
 
     assert _assembled_text(body) == REFUSAL_MESSAGE
-    assert "18.7%" not in body
+    assert finalize_calls == 2  # initial + correction
+    assert run_agent_mock.await_count == 1
+    assert correction_mock.await_count == 1
     attach.assert_not_awaited()
     update_message_data.assert_not_awaited()
 
 
 @pytest.mark.anyio
 async def test_run_chat_turn_does_not_retry_without_citations() -> None:
+    """Do not attempt correction when the model answer has no citations."""
     retriever = StubRetriever(passages=[_passage()])
     client = object()
-    call_count = 0
 
-    async def _fake_run_agent_uncited(
+    async def fake_run_agent_uncited(
         user_text: str,
         *,
         user_id: UUID,
@@ -580,19 +648,29 @@ async def test_run_chat_turn_does_not_retry_without_citations() -> None:
         grounding_validator,
         activity=None,
         retriever=None,
-    ) -> tuple[GroundedAnswer, list[SourcePassage]]:
-        nonlocal call_count
-        call_count += 1
+    ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
+        evidence = EvidenceRegistry()
+        usage = TurnUsage()
         return (
-            GroundedAnswer(answer="AWS operating income rose 42%."),
+            GroundedAnswer(answer="AWS operating income rose 42%.", citations=[]),
             [_passage()],
+            evidence,
+            usage,
         )
+
+    def fail_finalize(
+        answer: GroundedAnswer,
+        retrieved_passages: list[SourcePassage],
+        validator,
+    ) -> GroundedAnswer:
+        raise GroundingError("uncited")
 
     append = AsyncMock(return_value=_appended_message())
     attach = AsyncMock(return_value=[])
 
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
-        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+        "app.chat.orchestrator.chat_store.attach_citations",
+        new=attach,
     ), patch(
         "app.chat.orchestrator.chat_store.update_message_data",
         new=AsyncMock(),
@@ -601,8 +679,14 @@ async def test_run_chat_turn_does_not_retry_without_citations() -> None:
         new=AsyncMock(),
     ), patch(
         "app.chat.orchestrator._run_agent",
-        side_effect=_fake_run_agent_uncited,
-    ):
+        side_effect=fake_run_agent_uncited,
+    ), patch(
+        "app.chat.orchestrator._finalize_grounded_answer",
+        side_effect=fail_finalize,
+    ), patch(
+        "app.chat.orchestrator._run_citation_correction",
+        new_callable=AsyncMock,
+    ) as correction_mock:
         response = await run_chat_turn(
             client,
             user_id=USER_ID,
@@ -616,8 +700,8 @@ async def test_run_chat_turn_does_not_retry_without_citations() -> None:
         )
         body = await _collect(response)
 
-    assert call_count == 1
     assert _assembled_text(body) == REFUSAL_MESSAGE
+    correction_mock.assert_not_awaited()
     attach.assert_not_awaited()
 
 

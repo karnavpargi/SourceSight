@@ -45,7 +45,7 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 3. Tools return a **compact evidence** shape: evidence alias (`E1`…`E8`), content, ticker, fiscal year, section. No UUID / filing metadata dump in model context.
 4. Model outputs a **`GroundedDraft`**: answer text + citations that reference evidence aliases and short excerpts. Model never emits full `SourcePassage` objects or chunk UUIDs.
 5. Backend **finalizer** maps aliases → trusted `SourcePassage` records from the turn evidence registry, builds UUID citations, and hydrates `cited_passages` for the existing API/UI contract.
-6. Generation has a hard **output budget (~1,000–2,000 tokens)** and a bounded model-request / tool-call budget.
+6. Generation has a hard **output budget (2,800 tokens)** so structured `GroundedDraft` JSON is less likely to truncate mid-object, plus a bounded model-request / tool-call budget.
 7. On grounding failure: **deterministic repair first**; if needed, **one compact citation-only correction** using already-retrieved evidence and **no retrieval tools**. Second failure → existing refusal message.
 8. Every turn logs cumulative model calls, embedding calls, passages, input/output tokens, correction usage.
 

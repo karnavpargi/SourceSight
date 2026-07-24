@@ -8,7 +8,8 @@ class TurnBudget:
     max_searches: int = 3
     max_hits_per_search: int = 5
     max_unique_passages: int = 8
-    max_output_tokens: int = 1500
+    # Structured GroundedDraft JSON needs headroom; 1500 often truncates mid-object.
+    max_output_tokens: int = 2800
     max_corrections: int = 1
 
 

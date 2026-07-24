@@ -385,6 +385,7 @@ async def _stream_chat_turn(
             model=chat_model.model,
             error_type=type(exc).__name__,
             status_code=getattr(exc, "status_code", None),
+            error_message=str(exc)[:500],
         )
         await chat_store.append_message(
             client,

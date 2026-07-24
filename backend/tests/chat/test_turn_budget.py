@@ -6,5 +6,5 @@ def test_default_turn_budget_matches_spec() -> None:
     assert budget.max_searches == 3
     assert budget.max_hits_per_search == 5
     assert budget.max_unique_passages == 8
-    assert budget.max_output_tokens == 1500
+    assert budget.max_output_tokens == 2800
     assert budget.max_corrections == 1

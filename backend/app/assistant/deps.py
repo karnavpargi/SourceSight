@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from app.assistant.evidence import EvidenceRegistry
 from app.assistant.outputs import GroundedAnswer
+from app.chat.turn_budget import DEFAULT_TURN_BUDGET, TurnBudget
+from app.chat.usage import TurnUsage
 from app.retrieval.types import RetrievalResult, SourcePassage
 
 __all__ = ["DocumentAgentDeps", "DocumentRetriever", "GroundingValidator"]
@@ -17,6 +20,15 @@ class DocumentRetriever(Protocol):
 
     def search_filings(self, query: str, *, limit: int = 10) -> RetrievalResult:
         """Run hybrid retrieval over the filing corpus."""
+        ...
+
+    def search_filings_batch(
+        self,
+        queries: list[str],
+        *,
+        limit_per_query: int = 5,
+    ) -> list[SourcePassage]:
+        """Run batched hybrid retrieval over the filing corpus."""
         ...
 
     def read_chunk(self, chunk_id: UUID) -> SourcePassage:
@@ -53,3 +65,7 @@ class DocumentAgentDeps:
     thread_id: UUID
     retriever: DocumentRetriever
     grounding_validator: GroundingValidator
+    evidence: EvidenceRegistry
+    usage: TurnUsage
+    budget: TurnBudget = DEFAULT_TURN_BUDGET
+    search_count: int = 0

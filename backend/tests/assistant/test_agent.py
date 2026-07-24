@@ -1,13 +1,26 @@
 import json
+from datetime import date
+from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from pydantic_ai import ModelMessage, ModelResponse, ToolCallPart, models
 from pydantic_ai.messages import TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from app.assistant.agent import build_document_agent_model, chat_model_name, document_agent, load_instructions
+from app.assistant.agent import (
+    _search_filings_impl,
+    build_document_agent_model,
+    chat_model_name,
+    document_agent,
+    load_instructions,
+)
 from app.assistant.deps import DocumentAgentDeps
-from app.assistant.outputs import GroundedAnswer
+from app.assistant.evidence import CompactEvidence, EvidenceRegistry
+from app.assistant.outputs import GroundedDraft
+from app.chat.turn_budget import DEFAULT_TURN_BUDGET
+from app.chat.usage import TurnUsage
+from app.retrieval.types import SourcePassage
 from tests.assistant.test_deps import StubRetriever, StubValidator, THREAD_ID, USER_ID
 
 models.ALLOW_MODEL_REQUESTS = False
@@ -16,17 +29,19 @@ models.ALLOW_MODEL_REQUESTS = False
 def test_load_instructions_encodes_grounding_contract() -> None:
     instructions = load_instructions()
 
-    assert "GroundedAnswer" in instructions
+    assert "GroundedDraft" in instructions
     assert "search_filings" in instructions
-    assert "read_chunk" in instructions
-    assert "read_surrounding_chunks" in instructions
+    assert "queries" in instructions
+    assert "E1" in instructions
+    assert "read_chunk" not in instructions
+    assert "read_surrounding_chunks" not in instructions
     assert "stock recommendation" in instructions.lower()
 
 
 def test_document_agent_registers_retrieval_tools() -> None:
     tool_names = sorted(document_agent._function_toolset.tools.keys())
 
-    assert tool_names == ["read_chunk", "read_surrounding_chunks", "search_filings"]
+    assert tool_names == ["search_filings"]
 
 
 def test_chat_model_name_uses_google_provider(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,6 +70,9 @@ async def test_document_agent_run_invokes_search_filings_tool() -> None:
         thread_id=THREAD_ID,
         retriever=retriever,
         grounding_validator=StubValidator(),
+        evidence=EvidenceRegistry(),
+        usage=TurnUsage(),
+        budget=DEFAULT_TURN_BUDGET,
     )
     step = 0
 
@@ -63,7 +81,12 @@ async def test_document_agent_run_invokes_search_filings_tool() -> None:
         step += 1
         if step == 1:
             return ModelResponse(
-                parts=[ToolCallPart("search_filings", {"query": "AWS operating income"})]
+                parts=[
+                    ToolCallPart(
+                        "search_filings",
+                        {"queries": ["AMZN AWS operating income 2024"]},
+                    )
+                ]
             )
 
         return ModelResponse(
@@ -73,7 +96,6 @@ async def test_document_agent_run_invokes_search_filings_tool() -> None:
                         {
                             "answer": "This corpus does not contain enough evidence to answer that.",
                             "citations": [],
-                            "cited_passages": [],
                         }
                     )
                 )
@@ -83,9 +105,63 @@ async def test_document_agent_run_invokes_search_filings_tool() -> None:
     with document_agent.override(model=FunctionModel(model_fn)):
         result = await document_agent.run("How did AWS operating income change?", deps=deps)
 
-    assert retriever.last_query == "AWS operating income"
-    assert result.output == GroundedAnswer(
+    assert retriever.last_query == "AMZN AWS operating income 2024"
+    assert result.output == GroundedDraft(
         answer="This corpus does not contain enough evidence to answer that.",
         citations=[],
-        cited_passages=[],
     )
+
+
+def _sample_passage() -> SourcePassage:
+    return SourcePassage(
+        chunk_id=UUID("11111111-1111-1111-1111-111111111111"),
+        document_id=UUID("22222222-2222-2222-2222-222222222222"),
+        chunk_index=0,
+        content="Sample passage content about AWS operating income.",
+        section="Item 1. Business",
+        ticker="AMZN",
+        company_name="Amazon.com, Inc.",
+        form_type="10-K",
+        fiscal_year=2024,
+        accession_number="0001234567-24-000001",
+        filing_date=date(2024, 2, 15),
+        source_url="https://example.com/amzn-10k",
+        score=0.9,
+    )
+
+
+def test_search_filings_tool_returns_compact_aliases_without_chunk_id() -> None:
+    evidence = EvidenceRegistry()
+    usage = TurnUsage()
+
+    class StubBatchRetriever:
+        def __init__(self) -> None:
+            self.queries: list[list[str]] = []
+
+        def search_filings_batch(
+            self,
+            queries: list[str],
+            *,
+            limit_per_query: int = 5,
+        ) -> list[SourcePassage]:
+            self.queries.append(queries)
+            return [_sample_passage()]
+
+    retriever = StubBatchRetriever()
+    deps = SimpleNamespace(
+        budget=DEFAULT_TURN_BUDGET,
+        evidence=evidence,
+        usage=usage,
+        retriever=retriever,
+        search_count=0,
+    )
+
+    result = _search_filings_impl(deps, ["AMZN AWS operating income 2024"])
+
+    assert isinstance(result, list)
+    assert all(isinstance(item, CompactEvidence) for item in result)
+
+    dumped = [item.model_dump() for item in result]
+    assert all("chunk_id" not in row for row in dumped)
+    assert any(row["alias"].startswith("E") for row in dumped)
+

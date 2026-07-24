@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import UUID
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
@@ -15,10 +14,10 @@ from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from app.assistant.deps import DocumentAgentDeps
-from app.assistant.outputs import GroundedAnswer
+from app.assistant.evidence import CompactEvidence
+from app.assistant.outputs import GroundedDraft
 from app.config import ChatProvider, settings
 from app.http_client import get_async_client
-from app.retrieval.types import RetrievalResult, SourcePassage
 
 INSTRUCTIONS_PATH = Path(__file__).with_name("instructions.md")
 
@@ -83,36 +82,39 @@ def build_document_agent_model(provider: ChatProvider, model: str) -> Model:
 document_agent = Agent(
     build_document_agent_model(settings.chat_provider, _AGENT_PLACEHOLDER_MODEL),
     deps_type=DocumentAgentDeps,
-    output_type=PromptedOutput(GroundedAnswer),
+    output_type=PromptedOutput(GroundedDraft),
     instructions=load_instructions(),
     retries=3,
 )
 
 
+def _search_filings_impl(
+    deps: DocumentAgentDeps,
+    queries: list[str],
+) -> list[CompactEvidence]:
+    """Core implementation for the search_filings tool."""
+    budget = deps.budget
+    if deps.search_count >= budget.max_searches:
+        return []
+    cleaned = [q.strip() for q in queries if q and q.strip()][: budget.max_searches]
+    if not cleaned:
+        return []
+    deps.search_count += 1
+    passages = deps.retriever.search_filings_batch(
+        cleaned,
+        limit_per_query=budget.max_hits_per_search,
+    )
+    compact = deps.evidence.register(passages)
+    deps.usage.record_passages(len(deps.evidence.all_passages()))
+    return compact
+
+
 @document_agent.tool
 def search_filings(
     ctx: RunContext[DocumentAgentDeps],
-    query: str,
-    limit: int | None = 10,
-) -> RetrievalResult:
-    """Search indexed SEC filing chunks for passages relevant to the query."""
-    return ctx.deps.retriever.search_filings(query, limit=_optional_int(limit, 10))
+    queries: list[str],
+) -> list[CompactEvidence]:
+    """Search filings with 1–3 focused queries; returns compact evidence aliases."""
+    return _search_filings_impl(ctx.deps, queries)
 
 
-@document_agent.tool
-def read_chunk(ctx: RunContext[DocumentAgentDeps], chunk_id: UUID) -> SourcePassage:
-    """Load one filing chunk by ID with source document metadata."""
-    return ctx.deps.retriever.read_chunk(chunk_id)
-
-
-@document_agent.tool
-def read_surrounding_chunks(
-    ctx: RunContext[DocumentAgentDeps],
-    chunk_id: UUID,
-    window: int | None = 1,
-) -> list[SourcePassage]:
-    """Load neighboring chunks around a target chunk for additional context."""
-    return ctx.deps.retriever.read_surrounding_chunks(
-        chunk_id,
-        window=_optional_int(window, 1),
-    )

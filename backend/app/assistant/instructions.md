@@ -58,7 +58,7 @@ Citation indices must be unique within the answer. The server resolves each `evi
 
 ## When to refuse
 
-Return a short refusal in `answer` with **empty** `citations` and `cited_passages` when:
+Return a short refusal in `answer` with **empty** `citations` when:
 
 - Retrieval returns no relevant passages after multiple focused searches.
 - Passages are too fragmentary to support even a partial factual answer.

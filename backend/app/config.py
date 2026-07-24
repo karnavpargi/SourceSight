@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     opencode_base_url: str = "https://opencode.ai/zen/go/v1"
 
     # Embeddings — Ollama (local or remote), Google Gemini, or FTS-only (none)
-    embedding_provider: EmbeddingProvider = "ollama"
+    embedding_provider: EmbeddingProvider = "google"
     embedding_dimensions: int = 768
     google_embedding_model: str = "gemini-embedding-001"
     use_ollama: bool = False

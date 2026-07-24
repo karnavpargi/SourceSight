@@ -39,6 +39,22 @@ def test_registry_assigns_aliases_and_dedupes() -> None:
     assert registry.resolve("E1").chunk_id == p1.chunk_id
 
 
+def test_registry_truncates_compact_content() -> None:
+    long_content = "x" * 2000
+    registry = EvidenceRegistry()
+    passage = _passage(content=long_content)
+
+    compact_list = registry.register([passage])
+    assert len(compact_list) == 1
+    compact = compact_list[0]
+
+    # Compact content should be hard-capped to ~1200 characters with an ellipsis.
+    assert len(compact.content) <= 1200
+    assert compact.content.endswith("…")
+    # Full passage content is still available via the registry.
+    assert registry.resolve(compact.alias).content == long_content
+
+
 def test_registry_enforces_max_passages() -> None:
     registry = EvidenceRegistry(max_passages=2)
     passages = [_passage(f"c{i}") for i in range(5)]

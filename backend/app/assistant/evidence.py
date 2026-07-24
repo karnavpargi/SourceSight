@@ -9,6 +9,8 @@ from app.retrieval.types import SourcePassage
 
 __all__ = ["CompactEvidence", "EvidenceRegistry"]
 
+_MAX_COMPACT_CONTENT_CHARS = 1200
+
 
 class CompactEvidence(BaseModel):
     alias: str = Field(description="Turn-local evidence id, e.g. E1.")
@@ -16,6 +18,19 @@ class CompactEvidence(BaseModel):
     ticker: str
     fiscal_year: int
     section: str | None = None
+
+
+def _truncate_content(content: str, *, max_length: int = _MAX_COMPACT_CONTENT_CHARS) -> str:
+    """Return a compact content string capped at max_length characters.
+
+    The full SourcePassage content is retained in the registry; this only
+    affects what is sent back to the model in CompactEvidence.
+    """
+    if len(content) <= max_length:
+        return content
+    # Reserve one character for the ellipsis so the final string length
+    # does not exceed max_length.
+    return content[: max_length - 1] + "…"
 
 
 @dataclass
@@ -49,7 +64,7 @@ class EvidenceRegistry:
     def _to_compact(self, alias: str, passage: SourcePassage) -> CompactEvidence:
         return CompactEvidence(
             alias=alias,
-            content=passage.content,
+            content=_truncate_content(passage.content),
             ticker=passage.ticker,
             fiscal_year=passage.fiscal_year,
             section=passage.section,

@@ -164,4 +164,6 @@ def test_search_filings_tool_returns_compact_aliases_without_chunk_id() -> None:
     dumped = [item.model_dump() for item in result]
     assert all("chunk_id" not in row for row in dumped)
     assert any(row["alias"].startswith("E") for row in dumped)
+    # Embedding usage is approximated as one call per cleaned query when embeddings are enabled.
+    assert usage.embedding_calls == 1
 

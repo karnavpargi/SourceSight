@@ -78,7 +78,7 @@ document_agent = Agent(
     deps_type=DocumentAgentDeps,
     output_type=PromptedOutput(GroundedDraft),
     instructions=load_instructions(),
-    retries=3,
+    retries=1,
 )
 
 
@@ -98,6 +98,10 @@ def _search_filings_impl(
         cleaned,
         limit_per_query=budget.max_hits_per_search,
     )
+    if settings.embedding_provider != "none":
+        # Approximate embedding accounting: one embedding call per cleaned query.
+        for _ in cleaned:
+            deps.usage.record_embedding()
     compact = deps.evidence.register(passages)
     deps.usage.record_passages(len(deps.evidence.all_passages()))
     return compact

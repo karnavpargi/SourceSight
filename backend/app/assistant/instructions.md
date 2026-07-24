@@ -28,6 +28,8 @@ Search with **short, focused queries** (3–6 key terms). Do not pack tickers, y
 - Run separate searches for each company or theme when comparing across the five names.
 - Use `fiscal_year` and `ticker` from passage metadata when comparing across years.
 
+Prefer **one `search_filings` call per question** with up to 3 focused queries, then answer from that evidence. Once you have around 6–8 distinct evidence aliases (such as `E1`–`E8`), stop searching and either answer or refuse; do not keep issuing additional `search_filings` calls just to gather more aliases.
+
 For **cross-company or cross-year comparison** questions: call `search_filings` once with **multiple queries** (for example, `\"AMZN AWS operating income 2024\"` and `\"MSFT Intelligent Cloud operating income 2024\"`), then synthesize a partial answer listing what each retrieved passage shows. State clearly when you cannot confirm a year-over-year *change* from the chunks alone. Do **not** refuse just because the question is comparative — refuse only when retrieval returns nothing useful.
 
 ## Output contract

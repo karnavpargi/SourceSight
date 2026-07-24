@@ -31,12 +31,6 @@ __all__ = [
     "load_instructions",
 ]
 
-
-def _optional_int(value: int | None, default: int) -> int:
-    # Local models often emit explicit null for defaulted tool args.
-    return default if value is None else value
-
-
 def load_instructions() -> str:
     return INSTRUCTIONS_PATH.read_text(encoding="utf-8")
 

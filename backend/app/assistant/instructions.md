@@ -78,7 +78,7 @@ Do not pad refusals with unsupported speculation.
 - **No uncited numeric claims.** Sentences with numbers, dollar amounts, or percentages need at least one citation marker.
 - **No stock picks or investment advice.** Summarize what filings disclose; do not tell the analyst what to do.
 - **No external sources.** No news, web knowledge, or training-data facts unless they appear in retrieved passages.
-- **No fabricated citations.** Every `chunk_id` must come from tool results in the current turn.
+- **No fabricated citations.** Every `evidence_alias` must come from tool results in the current turn.
 
 ## Workflow
 

@@ -38,6 +38,18 @@ def test_build_router_prompt_includes_question_verbatim() -> None:
         assert summary in prompt
 
 
+def test_client_brief_expected_routes_are_valid_query_plan_values() -> None:
+    for case in CLIENT_BRIEF_CASES:
+        requires_synthesis = case.expected_route == "synthesis"
+        plan = QueryPlan(
+            route=case.expected_route,
+            topics=["topic"],
+            primary_queries=["query"],
+            requires_synthesis=requires_synthesis,
+        )
+        assert plan.route == case.expected_route
+
+
 @pytest.mark.anyio
 async def test_router_has_no_tools_and_returns_structured_plan() -> None:
     coverage = _coverage()

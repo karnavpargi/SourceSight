@@ -26,21 +26,28 @@ interface TurnActivityStepperProps {
   className?: string
 }
 
-function stepIcon(kind: string) {
+function StepKindIcon({
+  kind,
+  className,
+}: {
+  kind: string
+  className?: string
+}) {
+  const iconProps = { className, strokeWidth: 2 } as const
   switch (kind) {
     case 'search_filings':
-      return Search
+      return <Search {...iconProps} />
     case 'read_chunk':
     case 'read_surrounding_chunks':
-      return FileText
+      return <FileText {...iconProps} />
     case 'validate':
-      return ShieldCheck
+      return <ShieldCheck {...iconProps} />
     case 'save':
-      return Save
+      return <Save {...iconProps} />
     case 'thinking':
-      return Sparkles
+      return <Sparkles {...iconProps} />
     default:
-      return Sparkles
+      return <Sparkles {...iconProps} />
   }
 }
 
@@ -51,7 +58,6 @@ function GroupRow({
   group: GroupedActivityStep
   expanded: boolean
 }) {
-  const Icon = stepIcon(group.kind)
   const isRunning = group.status === 'running'
 
   return (
@@ -76,7 +82,10 @@ function GroupRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <Icon className="text-muted-foreground size-3.5 shrink-0" strokeWidth={2} />
+          <StepKindIcon
+            kind={group.kind}
+            className="text-muted-foreground size-3.5 shrink-0"
+          />
           <span
             className={cn(
               'font-medium',

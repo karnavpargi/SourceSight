@@ -66,7 +66,6 @@ export function ThreadSidebarContent({
   const [renameTitle, setRenameTitle] = useState('')
   const [deleteThreadId, setDeleteThreadId] = useState<string | null>(null)
 
-  const renameTarget = threads.find((thread) => thread.id === renameThreadId) ?? null
   const deleteTarget = threads.find((thread) => thread.id === deleteThreadId) ?? null
 
   return (

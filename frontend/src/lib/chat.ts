@@ -41,6 +41,12 @@ export interface TurnActivityData {
   order: number
 }
 
+export interface TurnUsageData {
+  input_tokens: number
+  output_tokens: number
+  estimated_cost_usd: number | null
+}
+
 export type ActivityStepStatus = 'running' | 'complete'
 
 export interface ActivityTimelineStep {
@@ -59,6 +65,7 @@ export type SourceSightUIMessage = UIMessage<
     'source-passage': SourcePassageData
     progress: ProgressData
     activity: TurnActivityData
+    usage: TurnUsageData
   }
 >
 
@@ -356,6 +363,35 @@ export function messageSourcePassages(message: UIMessage): SourcePassageData[] {
   return passages
 }
 
+export function messageUsage(message: UIMessage): TurnUsageData | undefined {
+  let latest: TurnUsageData | undefined
+
+  for (const part of message.parts) {
+    if (part.type !== 'data-usage' || !isTurnUsageData(part.data)) {
+      continue
+    }
+    latest = part.data
+  }
+
+  return latest
+}
+
+export function formatUsageFooter(usage: TurnUsageData): string {
+  const number = new Intl.NumberFormat('en', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  })
+  const compact = (value: number) => number.format(value).replace(/K$/, 'k')
+  const parts = [
+    `${compact(usage.input_tokens)} input`,
+    `${compact(usage.output_tokens)} output`,
+  ]
+  if (usage.estimated_cost_usd !== null) {
+    parts.push(`~$${usage.estimated_cost_usd.toFixed(4)}`)
+  }
+  return parts.join(' · ')
+}
+
 function isProgressData(value: unknown): value is ProgressData {
   if (typeof value !== 'object' || value === null) {
     return false
@@ -409,5 +445,21 @@ function isSourcePassageData(value: unknown): value is SourcePassageData {
     typeof record.fiscal_year === 'number' &&
     typeof record.content === 'string' &&
     typeof record.source_url === 'string'
+  )
+}
+
+function isTurnUsageData(value: unknown): value is TurnUsageData {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return (
+    typeof record.input_tokens === 'number' &&
+    record.input_tokens >= 0 &&
+    typeof record.output_tokens === 'number' &&
+    record.output_tokens >= 0 &&
+    (record.estimated_cost_usd === null ||
+      (typeof record.estimated_cost_usd === 'number' &&
+        record.estimated_cost_usd >= 0))
   )
 }

@@ -7,6 +7,7 @@ import { SourceCitations } from '@/components/chat/SourceCitations'
 import { SourcePassageDrawer } from '@/components/chat/SourcePassageDrawer'
 import { StarterPrompts } from '@/components/chat/StarterPrompts'
 import { TurnActivityStepper } from '@/components/chat/TurnActivityStepper'
+import { UsageFooter } from '@/components/chat/UsageFooter'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useStickToBottom } from '@/hooks/useStickToBottom'
 import {
@@ -18,6 +19,7 @@ import {
   messageProgress,
   messageSourcePassages,
   messageText,
+  messageUsage,
   shouldShowActivityTimeline,
   shouldShowMessageProgress,
 } from '@/lib/chat'
@@ -127,6 +129,7 @@ export function MessageList({
           const activityView = compactActivitySteps(activitySteps)
           const citations = messageCitations(message)
           const passages = messageSourcePassages(message)
+          const usage = messageUsage(message)
           const Icon = isUser ? UserRound : Bot
           const isActiveAssistantMessage =
             !isUser && streaming && message.id === lastMessage?.id
@@ -219,6 +222,10 @@ export function MessageList({
                     }
                   />
                 )}
+                {!isUser &&
+                  !showProgress &&
+                  !showLiveActivity &&
+                  usage !== undefined && <UsageFooter usage={usage} />}
               </div>
             </div>
           )

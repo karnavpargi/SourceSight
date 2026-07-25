@@ -97,6 +97,10 @@ CHAT_MODEL_PRICES={"gemini-flash-lite-latest":[0.30,2.50],"gemini-3.5-flash-lite
 
 Prices are **operator-configured** and must match the provider’s **exact** model IDs; unknown prices produce `estimated_cost_usd=null` in logs.
 
+Completed assistant messages show a compact usage footer with input tokens,
+output tokens, and estimated USD cost. Cost is omitted when any model used by
+the turn lacks an exact entry in `CHAT_MODEL_PRICES`.
+
 ## Success criteria (same Amazon question)
 
 - Gemini generation calls ≤ 4 (including optional correction)

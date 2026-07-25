@@ -43,3 +43,8 @@ logs/
 *.md
 **/*.md
 graphify-out/*
+frontend/.cursor/*
+backend/app/graphify-out/*
+backend/ingest/graphify-out/*
+# Git worktrees
+.worktrees/

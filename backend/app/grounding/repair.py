@@ -7,13 +7,27 @@ import re
 from uuid import UUID
 
 from app.assistant.outputs import Citation, GroundedAnswer
+from app.grounding.validator import (
+    CITATION_MARKER_RE,
+    _claim_segments,
+    _uncited_factual_segments,
+)
 from app.retrieval.types import SourcePassage
 
-CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 EXCERPT_MAX_LEN = 240
+_TERMINAL_PUNCT_RE = re.compile(r"^(.*?)([.!?])?\s*$", re.DOTALL)
 
 
 def repair_grounded_answer(
+    answer: GroundedAnswer,
+    retrieved_passages: list[SourcePassage],
+) -> GroundedAnswer:
+    """Fill missing citation records / inline markers for common model slips."""
+    repaired = _repair_missing_citation_records(answer, retrieved_passages)
+    return _repair_inline_citation_markers(repaired)
+
+
+def _repair_missing_citation_records(
     answer: GroundedAnswer,
     retrieved_passages: list[SourcePassage],
 ) -> GroundedAnswer:
@@ -70,6 +84,60 @@ def repair_grounded_answer(
             "cited_passages": cited_passages,
         }
     )
+
+
+def _repair_inline_citation_markers(answer: GroundedAnswer) -> GroundedAnswer:
+    """Inject missing inline markers into claim sentences for orphan records."""
+    if not answer.citations:
+        return answer
+
+    citation_indices = sorted(
+        {citation.citation_index for citation in answer.citations}
+    )
+    text = answer.answer
+    markers = {int(match) for match in CITATION_MARKER_RE.findall(text)}
+    orphans = [index for index in citation_indices if index not in markers]
+    uncited_segments = _uncited_factual_segments(text)
+
+    if not orphans and not uncited_segments:
+        return answer
+
+    for segment in uncited_segments:
+        if orphans:
+            marker = orphans.pop(0)
+        else:
+            marker = citation_indices[0]
+        cited_segment = _inject_marker_before_terminal_punct(segment, marker)
+        text = text.replace(segment, cited_segment, 1)
+
+    if orphans:
+        text = _inject_markers_into_last_segment(text, orphans)
+
+    if text == answer.answer:
+        return answer
+    return answer.model_copy(update={"answer": text})
+
+
+def _inject_marker_before_terminal_punct(segment: str, marker: int) -> str:
+    match = _TERMINAL_PUNCT_RE.match(segment.strip())
+    if match is None:
+        return f"{segment.rstrip()} [{marker}]"
+    body = match.group(1).rstrip()
+    punct = match.group(2) or ""
+    return f"{body} [{marker}]{punct}"
+
+
+def _inject_markers_into_last_segment(text: str, markers: list[int]) -> str:
+    segments = _claim_segments(text)
+    if not segments:
+        suffix = "".join(f" [{index}]" for index in markers)
+        return f"{text.rstrip()}{suffix}"
+
+    last = segments[-1]
+    cited = last
+    for marker in markers:
+        cited = _inject_marker_before_terminal_punct(cited, marker)
+    return text.replace(last, cited, 1)
 
 
 def _chunk_id_for_marker(

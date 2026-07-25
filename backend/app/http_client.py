@@ -18,7 +18,7 @@ def get_sync_client() -> httpx.Client:
 def get_async_client() -> httpx.AsyncClient:
     global _async_client
     if _async_client is None:
-        _async_client = httpx.AsyncClient(http2=True)
+        _async_client = httpx.AsyncClient(http2=True, timeout=120.0)
     return _async_client
 
 

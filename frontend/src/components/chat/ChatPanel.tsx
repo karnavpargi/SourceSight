@@ -14,7 +14,6 @@ import {
   type ChatGenerationSettings,
 } from '@/lib/chat-generation'
 import { consumePendingPrompt } from '@/lib/chat-prompts'
-import type { ChatModelSelection } from '@/lib/chat-models'
 
 interface ChatPanelProps {
   threadId: string
@@ -32,21 +31,12 @@ export function ChatPanel({
   onThreadsChange,
 }: ChatPanelProps) {
   const [input, setInput] = useState('')
-  const [modelSelection, setModelSelection] = useState<ChatModelSelection | null>(
-    null,
-  )
   const [generationSettings, setGenerationSettings] =
     useState<ChatGenerationSettings>(DEFAULT_CHAT_GENERATION)
   const refreshedSidebarTitle = useRef(initialMessages.length > 0)
   const sentInitialPrompt = useRef(false)
   const [pendingPrompt] = useState(() => consumePendingPrompt(threadId))
-  const modelSelectionRef = useRef<ChatModelSelection | null>(null)
   const generationSettingsRef = useRef<ChatGenerationSettings>(DEFAULT_CHAT_GENERATION)
-
-  const handleModelChange = useCallback((selection: ChatModelSelection) => {
-    modelSelectionRef.current = selection
-    setModelSelection(selection)
-  }, [])
 
   const handleGenerationChange = useCallback((settings: ChatGenerationSettings) => {
     generationSettingsRef.current = settings
@@ -73,18 +63,12 @@ export function ChatPanel({
           trigger,
           messageId,
         }) => {
-          const selection = modelSelectionRef.current
           const generation = generationSettingsRef.current
-          if (!selection) {
-            throw new Error('Select a provider and model before sending.')
-          }
 
           return {
             body: {
               ...body,
               threadId,
-              provider: selection.provider,
-              model: selection.model,
               temperature: generation.temperature,
               id,
               messages,
@@ -105,8 +89,7 @@ export function ChatPanel({
   })
 
   const streaming = status === 'streaming' || status === 'submitted'
-  const modelReady = Boolean(modelSelection)
-  const canSend = modelReady && !streaming
+  const canSend = !streaming
 
   useEffect(() => {
     if (refreshedSidebarTitle.current || !onThreadsChange) {
@@ -125,7 +108,6 @@ export function ChatPanel({
     if (
       !pendingPrompt ||
       sentInitialPrompt.current ||
-      !modelSelection ||
       streaming ||
       messages.length > 0
     ) {
@@ -134,13 +116,7 @@ export function ChatPanel({
 
     sentInitialPrompt.current = true
     sendMessage({ text: pendingPrompt })
-  }, [
-    messages.length,
-    modelSelection,
-    pendingPrompt,
-    sendMessage,
-    streaming,
-  ])
+  }, [messages.length, pendingPrompt, sendMessage, streaming])
 
   const handlePromptSelect = useCallback(
     (prompt: string) => {
@@ -152,11 +128,7 @@ export function ChatPanel({
     [canSend, sendMessage],
   )
 
-  const disabledHint = !modelReady
-    ? 'Select a model in settings before sending.'
-    : streaming
-      ? 'Waiting for the current response…'
-      : null
+  const disabledHint = streaming ? 'Waiting for the current response…' : null
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -210,9 +182,7 @@ export function ChatPanel({
         onStop={streaming ? stop : undefined}
         leadingSlot={
           <ChatSettingsMenu
-            modelSelection={modelSelection}
             generationSettings={generationSettings}
-            onModelChange={handleModelChange}
             onGenerationChange={handleGenerationChange}
             disabled={streaming}
           />

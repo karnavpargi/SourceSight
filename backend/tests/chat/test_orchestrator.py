@@ -32,6 +32,7 @@ USER_ID = UUID("550e8400-e29b-41d4-a716-446655440000")
 THREAD_ID = UUID("770e8400-e29b-41d4-a716-446655440002")
 MESSAGE_ID = UUID("880e8400-e29b-41d4-a716-446655440003")
 CHUNK_ID = UUID("11111111-1111-1111-1111-111111111111")
+UNKNOWN_CHUNK_ID = UUID("99999999-9999-9999-9999-999999999999")
 DOCUMENT_ID = UUID("22222222-2222-2222-2222-222222222222")
 NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
 TEST_CHAT_MODEL = ResolvedChatModel(provider="google", model="gemini-2.0-flash")
@@ -405,16 +406,17 @@ async def test_run_chat_turn_refuses_ungrounded_model_answer() -> None:
 
 
 def _apple_mix_bad_answer() -> GroundedAnswer:
+    # Cite a non-retrieved chunk — repair cannot invent evidence for this.
     return GroundedAnswer(
         answer=(
             "Apple's revenue mix shifted notably from 2021 to 2025, with Services growing "
-            "its share of total net sales from 18.7% to 24%. iPhone share declined [1]."
+            "its share of total net sales from 18.7% to 24% [1]. iPhone share declined [1]."
         ),
         citations=[
             Citation(
                 citation_index=1,
-                chunk_id=CHUNK_ID,
-                excerpt="iPhone share declined.",
+                chunk_id=UNKNOWN_CHUNK_ID,
+                excerpt="Services share grew from 18.7% to 24%.",
             )
         ],
         cited_passages=[_passage()],
@@ -466,7 +468,7 @@ async def test_run_chat_turn_retries_partial_grounding_failure() -> None:
         if call_count == 1:
             return _apple_mix_bad_answer(), [_passage()]
         assert "failed grounding validation" in user_text
-        assert "Uncited segment" in user_text
+        assert "was not retrieved" in user_text
         return _apple_mix_fixed_answer(), [_passage()]
 
     append = AsyncMock(return_value=_appended_message())

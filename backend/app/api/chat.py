@@ -56,8 +56,8 @@ class StreamChatRequest(BaseModel):
 
     thread_id: UUID = Field(alias="threadId")
     messages: list[dict]
-    provider: ChatProvider
-    model: str = Field(min_length=1)
+    provider: ChatProvider | None = None
+    model: str | None = None
     temperature: float = Field(default=1.0, ge=0.0, le=2.0)
 
 

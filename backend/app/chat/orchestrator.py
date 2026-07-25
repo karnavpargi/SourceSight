@@ -58,7 +58,8 @@ from app.retrieval.types import RetrievalResult, SourcePassage
 REFUSAL_MESSAGE = "This corpus doesn't contain enough evidence to answer that."
 
 _GROUNDING_RETRY_FEEDBACK = (
-    "Rewrite the answer so every sentence containing $, %, or numeric amounts has inline "
+    "Rewrite the answer so every citation record has a matching inline [n] marker in "
+    "the answer text, and every sentence containing $, %, or numeric amounts has inline "
     "[n] citation markers matching your citation records. Keep the same evidence and "
     "claims; only fix citation placement."
 )
@@ -66,6 +67,11 @@ _GROUNDING_RETRY_FEEDBACK = (
 MODEL_UNAVAILABLE_MESSAGE = (
     "The language model is unavailable right now. "
     "Check your CHAT_PROVIDER API key, billing, and quota."
+)
+
+UNSUPPORTED_TOOL_MODEL_MESSAGE = (
+    "This model does not support the tool use SourceSight needs for document search. "
+    "Choose a Gemini chat model such as gemini-flash-latest."
 )
 
 TURN_FAILED_MESSAGE = (
@@ -84,6 +90,9 @@ __all__ = [
 
 
 def model_unavailable_message(exc: BaseException, *, provider: ChatProvider) -> str:
+    if _is_unsupported_tool_model_error(exc):
+        return UNSUPPORTED_TOOL_MODEL_MESSAGE
+
     if isinstance(exc, ModelHTTPError):
         if exc.status_code == 429:
             if provider == "google":
@@ -113,6 +122,10 @@ def model_unavailable_message(exc: BaseException, *, provider: ChatProvider) -> 
         )
 
     return MODEL_UNAVAILABLE_MESSAGE
+
+
+def _is_unsupported_tool_model_error(exc: BaseException) -> bool:
+    return "function calling is not enabled" in str(exc).casefold()
 
 
 def _token_usage_fields(run: object) -> dict[str, int | None]:
@@ -375,6 +388,38 @@ async def _stream_chat_turn(
         )
         return
     except Exception as exc:
+        if _is_unsupported_tool_model_error(exc):
+            message = UNSUPPORTED_TOOL_MODEL_MESSAGE
+            logger.warning(
+                "chat.model_unsupported_tools",
+                provider=chat_model.provider,
+                model=chat_model.model,
+                error_type=type(exc).__name__,
+            )
+            await chat_store.append_message(
+                client,
+                user_id=user_id,
+                thread_id=thread_id,
+                role="assistant",
+                content=message,
+            )
+            yield format_progress_event("Answer ready.", phase="complete")
+            await asyncio.sleep(0)
+            async for event in stream_ui_message_text(
+                message,
+                message_id=message_id,
+                include_start=False,
+            ):
+                yield event
+            _log_turn_complete(
+                outcome="model_unavailable",
+                provider=chat_model.provider,
+                model=chat_model.model,
+                started_at=turn_started,
+                error_type=type(exc).__name__,
+            )
+            return
+
         logger.exception(
             "chat.turn_failed",
             provider=chat_model.provider,

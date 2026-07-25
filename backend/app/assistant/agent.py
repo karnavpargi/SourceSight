@@ -22,9 +22,6 @@ from app.retrieval.types import RetrievalResult, SourcePassage
 
 INSTRUCTIONS_PATH = Path(__file__).with_name("instructions.md")
 
-# Placeholder model name — every chat turn overrides the model via orchestrator.
-_AGENT_PLACEHOLDER_MODEL = "catalog-selected"
-
 __all__ = [
     "build_document_agent_model",
     "chat_model_name",
@@ -81,7 +78,7 @@ def build_document_agent_model(provider: ChatProvider, model: str) -> Model:
 
 
 document_agent = Agent(
-    build_document_agent_model(settings.chat_provider, _AGENT_PLACEHOLDER_MODEL),
+    build_document_agent_model(settings.chat_provider, settings.chat_model),
     deps_type=DocumentAgentDeps,
     output_type=PromptedOutput(GroundedAnswer),
     instructions=load_instructions(),

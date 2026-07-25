@@ -63,3 +63,89 @@ def test_repair_leaves_already_valid_answer_unchanged() -> None:
     repaired = repair_grounded_answer(answer, [passage])
 
     assert repaired == answer
+
+
+def test_repair_injects_orphan_citation_markers_into_claim() -> None:
+    from app.assistant.outputs import Citation
+
+    from app.grounding.validator import validate
+
+    passage = _passage(CHUNK_A, "AWS operating income increased 12%.")
+    answer = GroundedAnswer(
+        answer="AWS operating income increased 12%.",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_A,
+                excerpt="AWS operating income increased 12%.",
+            ),
+            Citation(
+                citation_index=2,
+                chunk_id=CHUNK_A,
+                excerpt="AWS operating income increased 12%.",
+            ),
+        ],
+        cited_passages=[passage],
+    )
+
+    repaired = repair_grounded_answer(answer, [passage])
+
+    assert repaired.answer == "AWS operating income increased 12% [1] [2]."
+    assert repaired.citations == answer.citations
+    validate(repaired, [passage])
+
+
+def test_repair_injects_only_missing_orphan_markers() -> None:
+    from app.assistant.outputs import Citation
+
+    from app.grounding.validator import validate
+
+    passage = _passage(CHUNK_A, "AWS operating income increased.")
+    answer = GroundedAnswer(
+        answer="AWS operating income rose [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_A,
+                excerpt="AWS operating income increased.",
+            ),
+            Citation(
+                citation_index=2,
+                chunk_id=CHUNK_A,
+                excerpt="Margins improved.",
+            ),
+        ],
+        cited_passages=[passage],
+    )
+
+    repaired = repair_grounded_answer(answer, [passage])
+
+    assert repaired.answer == "AWS operating income rose [1] [2]."
+    assert repaired.citations == answer.citations
+    validate(repaired, [passage])
+
+
+def test_repair_cites_uncited_factual_segment_with_existing_record() -> None:
+    from app.assistant.outputs import Citation
+
+    from app.grounding.validator import validate
+
+    passage = _passage(CHUNK_A, "AWS operating income increased 12%.")
+    answer = GroundedAnswer(
+        answer="AWS operating income increased 12%. Margins improved [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_A,
+                excerpt="Margins improved.",
+            )
+        ],
+        cited_passages=[passage],
+    )
+
+    repaired = repair_grounded_answer(answer, [passage])
+
+    assert repaired.answer == (
+        "AWS operating income increased 12% [1]. Margins improved [1]."
+    )
+    validate(repaired, [passage])

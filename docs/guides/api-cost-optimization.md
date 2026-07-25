@@ -6,7 +6,7 @@
 
 ## Problem (measured)
 
-One Amazon AWS vs segment comparison turn cost **₹8.13** (₹38.05 → ₹46.18).
+One Amazon AWS vs segment comparison turn cost **₹8.13** (₹38.05 → ₹46.18 → ₹53.07).
 
 Observed for that turn:
 

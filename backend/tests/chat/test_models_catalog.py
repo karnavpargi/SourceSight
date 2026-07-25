@@ -14,17 +14,53 @@ from app.chat.models_catalog import (
 )
 
 
-def test_resolve_chat_model_requires_provider_and_model() -> None:
-    with pytest.raises(ValueError, match="provider is required"):
-        resolve_chat_model(None, "gemini-2.0-flash")
+def test_resolve_chat_model_requires_model_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.chat.models_catalog.settings.chat_model", "")
+    monkeypatch.setattr("app.chat.models_catalog.settings.chat_provider", "google")
+    monkeypatch.setattr(
+        "app.chat.models_catalog.configured_providers",
+        lambda: ["google"],
+    )
 
     with pytest.raises(ValueError, match="model is required"):
         resolve_chat_model("google", None)
 
 
+def test_resolve_chat_model_uses_configured_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.chat.models_catalog.settings.chat_provider", "google")
+    monkeypatch.setattr(
+        "app.chat.models_catalog.settings.chat_model",
+        "gemini-flash-lite-latest",
+    )
+    monkeypatch.setattr(
+        "app.chat.models_catalog.configured_providers",
+        lambda: ["google"],
+    )
+
+    resolved = resolve_chat_model(None, None)
+
+    assert resolved == ResolvedChatModel(
+        provider="google",
+        model="gemini-flash-lite-latest",
+    )
+
+
 def test_resolve_chat_model_validates_against_live_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("app.chat.models_catalog.settings.chat_provider", "google")
+    monkeypatch.setattr(
+        "app.chat.models_catalog.settings.chat_model",
+        "gemini-flash-lite-latest",
+    )
+    monkeypatch.setattr(
+        "app.chat.models_catalog.configured_providers",
+        lambda: ["google"],
+    )
     monkeypatch.setattr(
         "app.chat.models_catalog.list_models",
         lambda provider: [ChatModelOption(id="gemini-2.0-flash", label="Gemini 2.0 Flash")],
@@ -36,6 +72,15 @@ def test_resolve_chat_model_validates_against_live_catalog(
 
 
 def test_resolve_chat_model_rejects_unknown_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.chat.models_catalog.settings.chat_provider", "google")
+    monkeypatch.setattr(
+        "app.chat.models_catalog.settings.chat_model",
+        "gemini-flash-lite-latest",
+    )
+    monkeypatch.setattr(
+        "app.chat.models_catalog.configured_providers",
+        lambda: ["google"],
+    )
     monkeypatch.setattr(
         "app.chat.models_catalog.list_models",
         lambda provider: [ChatModelOption(id="gemini-2.0-flash", label="Gemini 2.0 Flash")],
@@ -91,8 +136,97 @@ def test_list_models_raises_when_live_api_fails(monkeypatch: pytest.MonkeyPatch)
         "app.chat.models_catalog.http_get",
         side_effect=httpx.HTTPError("upstream unavailable"),
     ):
-        with pytest.raises(httpx.HTTPError):
+        with pytest.raises(ModelCatalogError, match="OpenCode Zen model catalog failed"):
             list_models("opencode")
+
+
+def test_list_google_models_raises_catalog_error_on_http_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.chat.models_catalog.settings.google_api_key",
+        "test-key",
+    )
+
+    with patch(
+        "app.chat.models_catalog.http_get",
+        side_effect=httpx.HTTPStatusError(
+            "401",
+            request=httpx.Request("GET", "https://example.test"),
+            response=httpx.Response(401),
+        ),
+    ):
+        with pytest.raises(ModelCatalogError, match="Google AI Studio model catalog failed"):
+            list_models("google")
+
+
+def test_list_google_models_excludes_non_tool_specializations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.chat.models_catalog.settings.google_api_key", "test-key")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "models": [
+                    {
+                        "name": "models/antigravity-preview-05-2026",
+                        "displayName": "Antigravity",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                    {
+                        "name": "models/gemini-2.5-flash-image",
+                        "displayName": "Image",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                    {
+                        "name": "models/gemini-flash-latest",
+                        "displayName": "Gemini Flash Latest",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                    {
+                        "name": "models/gemma-4-31b-it",
+                        "displayName": "Gemma 4",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                ]
+            }
+
+    with patch("app.chat.models_catalog.http_get", return_value=FakeResponse()):
+        models = list_models("google")
+
+    assert [model.id for model in models] == ["gemini-flash-latest", "gemma-4-31b-it"]
+
+
+def test_build_providers_response_prefers_configured_chat_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.chat.models_catalog.configured_providers",
+        lambda: ["google"],
+    )
+    monkeypatch.setattr(
+        "app.chat.models_catalog.list_models",
+        lambda provider: [
+            ChatModelOption(id="gemma-4-31b-it", label="Gemma"),
+            ChatModelOption(id="gemini-3-flash-preview", label="Gemini 3 Flash Preview"),
+            ChatModelOption(id="gemini-flash-latest", label="Gemini Flash Latest"),
+        ],
+    )
+    monkeypatch.setattr("app.chat.models_catalog.settings.chat_provider", "google")
+    monkeypatch.setattr(
+        "app.chat.models_catalog.settings.chat_model",
+        "gemini-flash-lite-latest",
+    )
+
+    response = build_providers_response()
+
+    assert response.default_provider == "google"
+    assert response.default_model == "gemini-flash-lite-latest"
+    assert response.providers[0].models[0].id == "gemini-flash-lite-latest"
 
 
 def test_build_providers_response_uses_live_defaults(
@@ -107,6 +241,7 @@ def test_build_providers_response_uses_live_defaults(
         lambda provider: [ChatModelOption(id=f"{provider}-live", label=f"{provider}-live")],
     )
     monkeypatch.setattr("app.chat.models_catalog.settings.chat_provider", "opencode")
+    monkeypatch.setattr("app.chat.models_catalog.settings.chat_model", "opencode-live")
 
     response = build_providers_response()
 

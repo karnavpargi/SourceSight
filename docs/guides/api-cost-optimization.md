@@ -89,10 +89,10 @@ Fallback behavior:
 Operator configuration (example):
 
 ```dotenv
-CHAT_ROUTER_MODEL=gemini-2.0-flash-lite
+CHAT_ROUTER_MODEL=gemini-flash-lite-latest
 CHAT_MODEL=gemini-3.5-flash-lite
-# Optional JSON: {"exact-model-id":[input_usd_per_1m,output_usd_per_1m]}
-CHAT_MODEL_PRICES={}
+# Paid-tier USD per 1M tokens [input, output]
+CHAT_MODEL_PRICES={"gemini-flash-lite-latest":[0.30,2.50],"gemini-3.5-flash-lite":[0.30,2.50]}
 ```
 
 Prices are **operator-configured** and must match the provider’s **exact** model IDs; unknown prices produce `estimated_cost_usd=null` in logs.

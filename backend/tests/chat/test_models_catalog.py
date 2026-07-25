@@ -163,6 +163,37 @@ def test_list_google_models_raises_catalog_error_on_http_failure(
             list_models("google")
 
 
+def test_list_google_models_excludes_retired_generate_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.chat.models_catalog.settings.google_api_key", "test-key")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "models": [
+                    {
+                        "name": "models/gemini-2.0-flash-lite",
+                        "displayName": "Retired Flash Lite",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                    {
+                        "name": "models/gemini-flash-lite-latest",
+                        "displayName": "Flash Lite Latest",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                ]
+            }
+
+    with patch("app.chat.models_catalog.http_get", return_value=FakeResponse()):
+        models = list_models("google")
+
+    assert [model.id for model in models] == ["gemini-flash-lite-latest"]
+
+
 def test_list_google_models_excludes_non_tool_specializations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

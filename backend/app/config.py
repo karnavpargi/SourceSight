@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Chat LLM — local (Ollama), Google AI Studio, or OpenCode Zen
     chat_provider: ChatProvider = "google"
     chat_model: str = "gemini-3.5-flash-lite"
-    chat_router_model: str = "gemini-2.0-flash-lite"
+    chat_router_model: str = "gemini-flash-lite-latest"
     # Values are paid-tier USD per million (input, output) tokens.
     chat_model_prices: dict[str, tuple[float, float]] = {}
     google_api_key: str = ""

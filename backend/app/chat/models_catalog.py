@@ -31,15 +31,23 @@ _GOOGLE_AGENT_UNSUPPORTED_MARKERS: tuple[str, ...] = (
 
 # Prefer a stable Gemini chat model when present in the live catalog.
 _GOOGLE_PREFERRED_DEFAULTS: tuple[str, ...] = (
-    "gemini-2.0-flash-lite",
-    "gemini-3.5-flash-lite",
     "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-flash-latest",
     "gemini-3.5-flash",
     "gemini-3.6-flash",
     "gemini-3-flash-preview",
     "gemini-pro-latest",
+)
+
+# Listed in Google's model catalog with generateContent, but generate calls 404.
+_GOOGLE_RETIRED_GENERATE_MODELS: frozenset[str] = frozenset(
+    {
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-lite-001",
+        "gemini-2.5-flash-lite",
+    }
 )
 
 
@@ -254,6 +262,8 @@ def _fetch_google_models() -> list[ChatModelOption]:
         model_id = name.removeprefix("models/")
         methods = entry.get("supportedGenerationMethods") or []
         if "generateContent" not in methods:
+            continue
+        if model_id in _GOOGLE_RETIRED_GENERATE_MODELS:
             continue
         if not _google_model_supports_agent_tools(model_id):
             continue

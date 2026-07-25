@@ -134,7 +134,7 @@ def test_router_model_defaults_to_flash_lite() -> None:
         google_api_key="key",
         _env_file=None,
     )
-    assert settings.chat_router_model == "gemini-2.0-flash-lite"
+    assert settings.chat_router_model == "gemini-flash-lite-latest"
 
 
 def test_model_prices_parse_exact_model_ids() -> None:

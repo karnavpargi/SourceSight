@@ -98,10 +98,10 @@ Per-turn limits (design):
 Configuration:
 
 ```dotenv
-CHAT_ROUTER_MODEL=gemini-2.0-flash-lite
+CHAT_ROUTER_MODEL=gemini-flash-lite-latest
 CHAT_MODEL=gemini-3.5-flash-lite
-# Optional JSON: {"exact-model-id":[input_usd_per_1m,output_usd_per_1m]}
-CHAT_MODEL_PRICES={}
+# Paid-tier USD per 1M tokens [input, output]
+CHAT_MODEL_PRICES={"gemini-flash-lite-latest":[0.30,2.50],"gemini-3.5-flash-lite":[0.30,2.50]}
 ```
 
 If `CHAT_MODEL_PRICES` contains exact model IDs for every model used in a turn, logs include `estimated_cost_usd`. Otherwise it is `null`.

@@ -15,6 +15,7 @@ __all__ = [
     "ExtractedFact",
     "FactExtraction",
     "ValidatedExtraction",
+    "validate_draft_numeric_claims",
     "validate_extraction",
 ]
 
@@ -57,6 +58,21 @@ class ValidatedExtraction:
 
 
 _NUM_RE = re.compile(r'[\(\)\-\$€£]?\d[\d,\.]*[\)]?')
+_CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_YEAR_REFERENCE_RE = re.compile(
+    r"\bFY\s*(?:19|20)\d{2}\b"
+    r"|\bfiscal\s+(?:year\s+)?(?:19|20)\d{2}\b"
+    r"|\b(?:19|20)\d{2}\s*[–-]\s*(?:19|20)\d{2}\b"
+    r"|\b(?:19|20)\d{2}\b",
+    re.IGNORECASE,
+)
+_SUBSTANTIVE_NUMERIC_RE = re.compile(
+    r"[$%]"
+    r"|\$\s*\d+(?:\.\d+)?"
+    r"|\b\d+(?:\.\d+)?(?:%|\s*(?:million|billion|trillion|bn|m|b)\b)",
+    re.IGNORECASE,
+)
 
 
 def _numeric_tokens(text: str) -> set[Decimal]:
@@ -95,6 +111,37 @@ def _validate_alias_exists(alias: str, registry: EvidenceRegistry) -> bool:
         return False
 
 
+def validate_draft_numeric_claims(
+    draft: GroundedDraft,
+    evidence: EvidenceRegistry,
+) -> None:
+    """Reject cited numeric claims whose values are absent from their evidence."""
+    aliases_by_index = {
+        citation.citation_index: citation.evidence_alias
+        for citation in draft.citations
+    }
+    for paragraph in draft.answer.splitlines():
+        for segment in _SENTENCE_SPLIT_RE.split(paragraph.strip()):
+            indexes = {
+                int(index)
+                for index in _CITATION_MARKER_RE.findall(segment)
+                if int(index) in aliases_by_index
+            }
+            if not indexes:
+                continue
+            claim = _CITATION_MARKER_RE.sub("", segment)
+            claim_without_years = _YEAR_REFERENCE_RE.sub("", claim)
+            if not _SUBSTANTIVE_NUMERIC_RE.search(claim_without_years):
+                continue
+            claim_numbers = _numeric_tokens(claim_without_years)
+            if not claim_numbers:
+                continue
+            for index in indexes:
+                passage = evidence.resolve(aliases_by_index[index])
+                if not claim_numbers <= _numeric_tokens(passage.content):
+                    raise ValueError("unsupported numeric claim in cited draft")
+
+
 def validate_extraction(extraction: FactExtraction, evidence: EvidenceRegistry, route: str) -> ValidatedExtraction:
     errors: list[str] = []
     validated_facts: list[ExtractedFact] = []
@@ -130,8 +177,7 @@ def validate_extraction(extraction: FactExtraction, evidence: EvidenceRegistry, 
         if fact.status == "supported" and fact.value and fact.evidence_alias:
             fact_nums = _numeric_tokens(fact.value)
             src_nums = _numeric_tokens(passage.content if passage is not None else "")
-            # if fact contains numeric tokens but none match the source, reject the fact
-            if fact_nums and not fact_nums.intersection(src_nums):
+            if fact_nums and not fact_nums <= src_nums:
                 errors.append("unsupported numeric value")
                 continue
 

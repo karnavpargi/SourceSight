@@ -31,7 +31,11 @@ from app.assistant.composer import (
 from app.assistant.deps import DocumentRetriever, GroundingValidator
 from app.assistant.evidence import EvidenceRegistry
 from app.assistant.extractor import run_fact_extractor
-from app.assistant.facts import ValidatedExtraction, validate_extraction
+from app.assistant.facts import (
+    ValidatedExtraction,
+    validate_draft_numeric_claims,
+    validate_extraction,
+)
 from app.assistant.finalize import finalize_grounded_draft
 from app.assistant.outputs import GroundedAnswer
 from app.assistant.router import run_query_router
@@ -416,7 +420,7 @@ async def _stream_chat_turn(
         ):
             logger.info(
                 "chat.grounding_correction",
-                reason=str(exc),
+                error_type=type(exc).__name__,
                 retrieved_passage_count=len(retrieved_passages),
                 citation_count=len(answer.citations),
                 provider=chat_model.provider,
@@ -443,13 +447,17 @@ async def _stream_chat_turn(
                     grounding_validator,
                 )
                 grounding_error = None
-            except GroundingError as retry_exc:
-                grounding_error = retry_exc
+            except (GroundingError, ValueError) as retry_exc:
+                grounding_error = (
+                    retry_exc
+                    if isinstance(retry_exc, GroundingError)
+                    else GroundingError("citation correction produced an invalid draft")
+                )
 
     if grounding_error is not None:
         logger.warning(
             "chat.grounding_failed",
-            reason=str(grounding_error),
+            error_type=type(grounding_error).__name__,
             retrieved_passage_count=len(retrieved_passages),
             citation_count=len(answer.citations),
             provider=chat_model.provider,
@@ -699,6 +707,7 @@ async def _run_routed_turn(
                 activity.end(synth_step_id, kind=ROUTED_STAGE_SYNTHESIZE, label="Draft ready")
 
     try:
+        validate_draft_numeric_claims(draft, evidence)
         answer = finalize_grounded_draft(draft, evidence)
     except ValueError:
         # If the draft referenced an unknown evidence alias, refuse rather than

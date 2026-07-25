@@ -602,6 +602,82 @@ async def test_grounding_correction_failure_refuses() -> None:
 
 
 @pytest.mark.anyio
+async def test_correction_with_unknown_alias_refuses_without_turn_failure() -> None:
+    client = object()
+    initial_answer = _apple_mix_bad_answer()
+    evidence = EvidenceRegistry()
+    evidence.register([_passage()])
+
+    async def fake_run_agent(
+        user_text: str,
+        *,
+        user_id: UUID,
+        thread_id: UUID,
+        chat_model: ResolvedChatModel,
+        generation: ChatGenerationConfig,
+        grounding_validator,
+        activity=None,
+        retriever=None,
+    ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
+        return initial_answer, [_passage()], evidence, TurnUsage()
+
+    def fail_initial_validation(
+        answer: GroundedAnswer,
+        retrieved_passages: list[SourcePassage],
+        validator,
+    ) -> GroundedAnswer:
+        raise GroundingError("uncited answer")
+
+    unknown_alias_draft = GroundedDraft(
+        answer="Corrected answer [1].",
+        citations=[
+            DraftCitation(
+                citation_index=1,
+                evidence_alias="E999",
+                excerpt="Unsupported source.",
+            )
+        ],
+    )
+    append = AsyncMock(return_value=_appended_message())
+
+    with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
+        "app.chat.orchestrator.chat_store.attach_citations",
+        new=AsyncMock(),
+    ) as attach, patch(
+        "app.chat.orchestrator.chat_store.update_message_data",
+        new=AsyncMock(),
+    ) as update_message_data, patch(
+        "app.chat.orchestrator.chat_store.title_thread_from_first_message",
+        new=AsyncMock(),
+    ), patch(
+        "app.chat.orchestrator._run_agent",
+        side_effect=fake_run_agent,
+    ), patch(
+        "app.chat.orchestrator._finalize_grounded_answer",
+        side_effect=fail_initial_validation,
+    ), patch(
+        "app.chat.orchestrator.run_citation_correction",
+        new=AsyncMock(return_value=unknown_alias_draft),
+    ) as correction_mock:
+        response = await run_chat_turn(
+            client,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            user_text="How did Apple's revenue mix change?",
+            user_message_data=None,
+            grounding_validator=grounding_validator,
+            chat_model=TEST_CHAT_MODEL,
+            generation=TEST_GENERATION,
+        )
+        body = await _collect(response)
+
+    assert _assembled_text(body) == REFUSAL_MESSAGE
+    assert correction_mock.await_count == 1
+    attach.assert_not_awaited()
+    update_message_data.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_run_chat_turn_does_not_retry_without_citations() -> None:
     """Do not attempt correction when the model answer has no citations."""
     retriever = StubRetriever(passages=[_passage()])
@@ -809,6 +885,65 @@ async def test_extractive_route_does_not_call_synthesis() -> None:
     assert usage.route == "extractive"
 
 
+@pytest.mark.anyio
+async def test_extractive_draft_cannot_survive_discarded_numeric_fact() -> None:
+    passage = _passage().model_copy(update={"content": "Revenue was $10 million."})
+    extraction = FactExtraction(
+        facts=[
+            ExtractedFact(
+                status="supported",
+                ticker="AMZN",
+                fiscal_year=2024,
+                topic="revenue",
+                value="$10 million, up 25%",
+                unit="USD millions",
+                finding=None,
+                evidence_alias="E1",
+            )
+        ],
+        missing_scope=[],
+        conflicts=[],
+        draft=GroundedDraft(
+            answer="Revenue was $10 million, up 25% [1].",
+            citations=[
+                DraftCitation(
+                    citation_index=1,
+                    evidence_alias="E1",
+                    excerpt="Revenue was $10 million.",
+                )
+            ],
+        ),
+    )
+
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=AsyncMock(return_value=_extractive_plan()),
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=AsyncMock(return_value=extraction),
+    ):
+        answer, _, _, _ = await _run_routed_turn(
+            "How did revenue change?",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[passage]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    assert answer.answer == REFUSAL_MESSAGE
+    assert answer.citations == []
+
+
 def _synthesis_plan(*, tickers: list[str] | None = None) -> QueryPlan:
     return QueryPlan(
         route="synthesis",
@@ -915,6 +1050,52 @@ async def test_synthesis_route_calls_selected_chat_model() -> None:
     assert usage.budget_profile == "standard"
     assert synthesis.await_args.args[4] is synthesis_llm
     assert extractor.await_args.args[3] is router_llm
+
+
+@pytest.mark.anyio
+async def test_synthesis_draft_with_unsupported_number_refuses() -> None:
+    passage = _passage().model_copy(update={"content": "Revenue was $10 million."})
+    unsupported_draft = GroundedDraft(
+        answer="Revenue was $10 million, up 25% [1].",
+        citations=[
+            DraftCitation(
+                citation_index=1,
+                evidence_alias="E1",
+                excerpt="Revenue was $10 million.",
+            )
+        ],
+    )
+
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=AsyncMock(return_value=_synthesis_plan()),
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=AsyncMock(return_value=_synthesis_extraction()),
+    ), patch(
+        "app.chat.orchestrator.run_synthesis",
+        new=AsyncMock(return_value=unsupported_draft),
+    ):
+        answer, _, _, _ = await _run_routed_turn(
+            "How did revenue change?",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[passage]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    assert answer.answer == REFUSAL_MESSAGE
+    assert answer.citations == []
 
 
 @pytest.mark.anyio
@@ -1039,6 +1220,46 @@ async def test_router_model_unavailable_uses_direct_fallback_without_router_call
     extractor.assert_not_awaited()
     fallback.assert_awaited_once()
     assert usage.route == "synthesis"
+
+
+@pytest.mark.anyio
+async def test_direct_fallback_draft_with_unsupported_number_refuses() -> None:
+    passage = _passage().model_copy(update={"content": "Revenue was $10 million."})
+    unsupported_draft = GroundedDraft(
+        answer="Revenue was $10 million, up 25% [1].",
+        citations=[
+            DraftCitation(
+                citation_index=1,
+                evidence_alias="E1",
+                excerpt="Revenue was $10 million.",
+            )
+        ],
+    )
+
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=None,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_direct_fallback",
+        new=AsyncMock(return_value=unsupported_draft),
+    ):
+        answer, _, _, _ = await _run_routed_turn(
+            "How did revenue change?",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[passage]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    assert answer.answer == REFUSAL_MESSAGE
+    assert answer.citations == []
 
 
 @pytest.mark.anyio

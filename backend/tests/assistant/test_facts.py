@@ -10,6 +10,7 @@ from app.assistant.outputs import GroundedDraft, DraftCitation
 from app.assistant.facts import (
     FactExtraction,
     ExtractedFact,
+    validate_draft_numeric_claims,
     validate_extraction,
 )
 
@@ -96,6 +97,47 @@ def test_numeric_fact_not_present_in_source_is_discarded() -> None:
     validated = validate_extraction(extraction, registry, route="extractive")
     assert validated.facts == []
     assert "unsupported numeric value" in validated.validation_errors[0]
+
+
+def test_numeric_fact_requires_all_source_numbers() -> None:
+    registry = _registry("Revenue was $10 million.")
+    extraction = FactExtraction(
+        facts=[
+            ExtractedFact(
+                status="supported",
+                ticker="AMZN",
+                fiscal_year=2024,
+                topic="revenue change",
+                value="$10 million, up 25%",
+                unit="USD millions",
+                finding=None,
+                evidence_alias="E1",
+            )
+        ],
+        missing_scope=[],
+        conflicts=[],
+        draft=_draft("Revenue was $10 million, up 25% [1].", "E1"),
+    )
+
+    validated = validate_extraction(extraction, registry, route="extractive")
+
+    assert validated.facts == []
+    assert "unsupported numeric value" in validated.validation_errors[0]
+
+
+def test_draft_numeric_claim_requires_all_numbers_in_cited_passage() -> None:
+    registry = _registry("Revenue was $10 million.")
+    draft = _draft("Revenue was $10 million, up 25% [1].", "E1")
+
+    with pytest.raises(ValueError, match="unsupported numeric claim"):
+        validate_draft_numeric_claims(draft, registry)
+
+
+def test_draft_numeric_claim_allows_supported_multiple_numbers() -> None:
+    registry = _registry("Revenue was $39,834 million, up 13.2%.")
+    draft = _draft("Revenue was $39,834 million, up 13.2% [1].", "E1")
+
+    validate_draft_numeric_claims(draft, registry)
 
 
 def test_synthesis_route_rejects_extractive_draft() -> None:

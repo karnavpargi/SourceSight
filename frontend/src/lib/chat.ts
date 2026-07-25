@@ -455,11 +455,14 @@ function isTurnUsageData(value: unknown): value is TurnUsageData {
   const record = value as Record<string, unknown>
   return (
     typeof record.input_tokens === 'number' &&
+    Number.isInteger(record.input_tokens) &&
     record.input_tokens >= 0 &&
     typeof record.output_tokens === 'number' &&
+    Number.isInteger(record.output_tokens) &&
     record.output_tokens >= 0 &&
     (record.estimated_cost_usd === null ||
       (typeof record.estimated_cost_usd === 'number' &&
+        Number.isFinite(record.estimated_cost_usd) &&
         record.estimated_cost_usd >= 0))
   )
 }

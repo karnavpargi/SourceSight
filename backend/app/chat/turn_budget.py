@@ -37,19 +37,3 @@ DEFAULT_TURN_BUDGET = STANDARD_TURN_BUDGET
 def budget_for_plan(plan: "QueryPlan") -> TurnBudget:  # type: ignore[name-defined]
     # Broad budget for multi-company plans, standard otherwise.
     return BROAD_TURN_BUDGET if len(set(plan.tickers)) > 1 else STANDARD_TURN_BUDGET
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class TurnBudget:
-    max_searches: int = 3
-    max_hits_per_search: int = 5
-    max_unique_passages: int = 8
-    # Structured GroundedDraft JSON needs headroom; 1500 often truncates mid-object.
-    max_output_tokens: int = 2800
-    max_corrections: int = 1
-
-
-DEFAULT_TURN_BUDGET = TurnBudget()

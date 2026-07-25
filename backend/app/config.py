@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Chat LLM — local (Ollama), Google AI Studio, or OpenCode Zen
     chat_provider: ChatProvider = "google"
     chat_model: str = "gemini-3.5-flash-lite"
+    chat_router_model: str = "gemini-2.0-flash-lite"
+    # Values are paid-tier USD per million (input, output) tokens.
+    chat_model_prices: dict[str, tuple[float, float]] = {}
     google_api_key: str = ""
     opencode_api_key: str = ""
     opencode_base_url: str = "https://opencode.ai/zen/go/v1"
@@ -94,6 +97,8 @@ class Settings(BaseSettings):
             raise ValueError("CHAT_PROVIDER cannot be local when USE_OLLAMA is false")
         if not self.chat_model.strip():
             raise ValueError("CHAT_MODEL is required")
+        if not self.chat_router_model.strip():
+            raise ValueError("CHAT_ROUTER_MODEL is required")
         if self.embedding_provider not in EMBEDDING_PROVIDERS:
             supported = ", ".join(sorted(EMBEDDING_PROVIDERS))
             raise ValueError(f"EMBEDDING_PROVIDER must be one of: {supported}")

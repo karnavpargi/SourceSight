@@ -3,6 +3,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from app.chat import models_catalog
 from app.chat.models_catalog import (
     ChatModelOption,
     ModelCatalogError,
@@ -11,7 +12,9 @@ from app.chat.models_catalog import (
     configured_providers,
     list_models,
     resolve_chat_model,
+    resolve_router_model,
 )
+from app.config import settings
 
 
 def test_resolve_chat_model_requires_model_when_unset(
@@ -261,6 +264,35 @@ def test_build_providers_response_fails_when_no_models(
 
     with pytest.raises(ModelCatalogError, match="No chat models are available"):
         build_providers_response()
+
+
+def test_resolve_router_model_returns_configured_live_google_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "chat_router_model", "gemini-2.0-flash-lite")
+    monkeypatch.setattr(settings, "google_api_key", "key")
+    monkeypatch.setattr(
+        models_catalog,
+        "_cached_google_model_ids",
+        lambda: frozenset({"gemini-2.0-flash-lite"}),
+    )
+    assert resolve_router_model() == ResolvedChatModel(
+        provider="google",
+        model="gemini-2.0-flash-lite",
+    )
+
+
+def test_resolve_router_model_returns_none_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "chat_router_model", "retired-model")
+    monkeypatch.setattr(settings, "google_api_key", "key")
+    monkeypatch.setattr(
+        models_catalog,
+        "_cached_google_model_ids",
+        lambda: frozenset({"gemini-3.5-flash-lite"}),
+    )
+    assert resolve_router_model() is None
 
 
 def test_configured_providers_requires_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:

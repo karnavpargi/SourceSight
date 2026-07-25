@@ -62,7 +62,7 @@ def test_document_agent_deps_wires_runtime_services() -> None:
     validator = StubValidator()
     evidence = EvidenceRegistry()
     usage = TurnUsage()
-    budget = TurnBudget()
+    budget = DEFAULT_TURN_BUDGET
 
     deps = DocumentAgentDeps(
         user_id=USER_ID,

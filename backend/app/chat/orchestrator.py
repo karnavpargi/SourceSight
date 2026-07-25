@@ -635,7 +635,7 @@ async def _run_agent_with_retriever(
     agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
     model_settings = build_model_settings(
         generation,
-        max_tokens=budget.max_output_tokens,
+        max_tokens=budget.extractor_output_tokens,
     )
 
     async def event_handler(ctx, events):
@@ -737,9 +737,10 @@ async def _run_citation_correction(
 
     budget = TurnBudget(
         max_searches=0,
+        max_reserve_searches=DEFAULT_TURN_BUDGET.max_reserve_searches,
         max_hits_per_search=DEFAULT_TURN_BUDGET.max_hits_per_search,
         max_unique_passages=DEFAULT_TURN_BUDGET.max_unique_passages,
-        max_output_tokens=DEFAULT_TURN_BUDGET.max_output_tokens,
+        correction_output_tokens=DEFAULT_TURN_BUDGET.correction_output_tokens,
         max_corrections=DEFAULT_TURN_BUDGET.max_corrections,
     )
     deps = DocumentAgentDeps(
@@ -756,7 +757,7 @@ async def _run_citation_correction(
     agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
     model_settings = build_model_settings(
         generation,
-        max_tokens=budget.max_output_tokens,
+        max_tokens=budget.correction_output_tokens,
     )
 
     with document_agent.override(model=agent_model):

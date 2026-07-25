@@ -761,7 +761,7 @@ async def test_correction_evidence_dump_uses_truncated_content() -> None:
         return_value=object(),
     ), patch(
         "app.chat.orchestrator.build_model_settings",
-        return_value={"max_tokens": DEFAULT_TURN_BUDGET.max_output_tokens},
+        return_value={"max_tokens": DEFAULT_TURN_BUDGET.correction_output_tokens},
     ), patch(
         "app.chat.orchestrator.document_agent.override",
         side_effect=lambda *args, **kwargs: nullcontext(),

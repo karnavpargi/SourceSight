@@ -28,7 +28,9 @@ __all__ = [
     "build_document_agent_model",
     "chat_model_name",
     "document_agent",
+    "infer_usage_model_name",
     "load_instructions",
+    "token_usage_fields",
 ]
 
 def load_instructions() -> str:
@@ -126,5 +128,33 @@ def search_filings(
 ) -> list[CompactEvidence]:
     """Search filings with 1–3 focused queries; returns compact evidence aliases."""
     return _search_filings_impl(ctx.deps, queries)
+
+
+def infer_usage_model_name(model: object) -> str:
+    """Derive a stable model identifier for usage attribution."""
+    value = getattr(model, "model_name", None)
+    if isinstance(value, str) and value.strip():
+        return value
+    value = getattr(model, "model", None)
+    if isinstance(value, str) and value.strip():
+        return value
+    return "function"
+
+
+def token_usage_fields(run: object) -> dict[str, int | None]:
+    """Extract input/output token counts from a pydantic-ai run object."""
+    usage = getattr(run, "usage", None)
+    if callable(usage):
+        usage = usage()
+    if usage is None:
+        return {"input_tokens": None, "output_tokens": None}
+
+    input_tokens = getattr(usage, "input_tokens", None)
+    if input_tokens is None:
+        input_tokens = getattr(usage, "request_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if output_tokens is None:
+        output_tokens = getattr(usage, "response_tokens", None)
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
 
 

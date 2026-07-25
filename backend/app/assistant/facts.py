@@ -5,11 +5,10 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 
-from app.assistant.outputs import GroundedDraft, DraftCitation
+from app.assistant.outputs import GroundedDraft
 from app.assistant.evidence import EvidenceRegistry
-from app.retrieval.types import SourcePassage
 
 __all__ = [
     "FactStatus",

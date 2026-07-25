@@ -41,6 +41,14 @@ class StubRetriever:
     def search_filings(self, query: str, *, limit: int = 10) -> RetrievalResult:
         return RetrievalResult(query=query, passages=self.passages)
 
+    def search_filings_batch(
+        self,
+        queries: list[str],
+        *,
+        limit_per_query: int = 5,
+    ) -> list[SourcePassage]:
+        return self.passages[: limit_per_query * len(queries)]
+
     def read_chunk(self, chunk_id: UUID) -> SourcePassage:
         raise NotImplementedError(chunk_id)
 
@@ -173,7 +181,7 @@ def _fake_run_agent_factory(answer: GroundedAnswer, passages: list[SourcePassage
         retriever=None,
     ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
         if retriever is not None:
-            retriever.search_filings(user_text)
+            retriever.search_filings_batch([user_text])
         evidence = EvidenceRegistry()
         usage = TurnUsage()
         return answer, passages, evidence, usage

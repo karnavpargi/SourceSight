@@ -12,7 +12,7 @@ from app.retrieval.document_retriever import (
     SessionDocumentRetriever,
     SessionPerCallDocumentRetriever,
 )
-from app.retrieval.retriever import DEFAULT_NEIGHBOR_WINDOW, DEFAULT_RETRIEVAL_LIMIT
+from app.retrieval.retriever import DEFAULT_RETRIEVAL_LIMIT
 from app.retrieval.types import RetrievalResult, SourcePassage
 
 CHUNK_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")

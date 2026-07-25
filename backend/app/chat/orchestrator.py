@@ -33,7 +33,7 @@ from app.assistant.evidence import EvidenceRegistry
 from app.assistant.extractor import run_fact_extractor
 from app.assistant.facts import ValidatedExtraction, validate_extraction
 from app.assistant.finalize import finalize_grounded_draft
-from app.assistant.outputs import GroundedAnswer, GroundedDraft
+from app.assistant.outputs import GroundedAnswer
 from app.assistant.router import run_query_router
 from app.chat.activity_summary import group_activity_steps, merge_activity_log
 from app.chat.agent_events import (
@@ -698,7 +698,12 @@ async def _run_routed_turn(
             if activity is not None and synth_step_id is not None:
                 activity.end(synth_step_id, kind=ROUTED_STAGE_SYNTHESIZE, label="Draft ready")
 
-    answer = finalize_grounded_draft(draft, evidence)
+    try:
+        answer = finalize_grounded_draft(draft, evidence)
+    except ValueError:
+        # If the draft referenced an unknown evidence alias, refuse rather than
+        # crashing the turn (the grounding contract forbids invented sources).
+        answer = GroundedAnswer(answer=REFUSAL_MESSAGE, citations=[], cited_passages=[])
     return answer, recording_retriever.retrieved_passages, evidence, usage
 
 

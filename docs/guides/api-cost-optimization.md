@@ -68,6 +68,35 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 - Search-budget exhaustion → best partial grounded answer or refusal.
 - Auth, persistence, streaming, and frontend wire format stay unchanged.
 
+## Multi-model routing
+
+SourceSight uses an **extract-first, escalate-only** flow:
+
+- **Router + extractor model**: configured by `CHAT_ROUTER_MODEL` (intended to be a low-cost Flash-Lite model).
+- **Synthesis model**: the model selected on each `/chat/stream` request (often `CHAT_MODEL` in local defaults).
+
+Stage limits (per turn):
+
+- **Calls**: 1 router, 1 extractor, 0–1 synthesis, 0–1 citation correction.
+- **Retrieval**:
+  - **standard**: ≤3 queries, 5 hits/query, 8 unique passages
+  - **broad**: ≤5 queries, 5 hits/query, 15 unique passages
+
+Fallback behavior:
+
+- If the router model is unavailable or fails, the turn falls back to a bounded direct draft using the selected synthesis model (no extra router retry).
+
+Operator configuration (example):
+
+```dotenv
+CHAT_ROUTER_MODEL=gemini-2.0-flash-lite
+CHAT_MODEL=gemini-3.5-flash-lite
+# Optional JSON: {"exact-model-id":[input_usd_per_1m,output_usd_per_1m]}
+CHAT_MODEL_PRICES={}
+```
+
+Prices are **operator-configured** and must match the provider’s **exact** model IDs; unknown prices produce `estimated_cost_usd=null` in logs.
+
 ## Success criteria (same Amazon question)
 
 - Gemini generation calls ≤ 4 (including optional correction)
@@ -87,6 +116,27 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 5. Orchestrator: usage log includes cumulative tokens across correction.
 6. Regression: grounding validator still rejects uncited numbers and invented chunk IDs.
 7. Manual: rerun measured Amazon question; compare spend vs ₹8.13 baseline.
+
+## Live evaluation harness (provider-billed)
+
+Do not report measured ₹ cost unless the provider billing delta is recorded.
+
+For each exact question in `docs/client-brief.md`:
+
+1. Record provider spend before the request.
+2. Send one authenticated `POST /chat/stream` request.
+3. Capture the server log line `chat.turn_complete` (route, budget, per-stage tokens, `estimated_cost_usd`).
+4. Verify: valid citations for normal answers, or a clean grounded refusal.
+5. Record provider spend delta (INR).
+
+Live-results table (fill from logs + billing):
+
+```text
+Question | Route | Budget | Router tokens | Extractor tokens | Synthesis tokens |
+Correction | Passages | Outcome | Provider cost INR
+```
+
+Status: **unmeasured in this branch** unless you can record a real provider billing delta (quota/billing access may block this run).
 
 ## Out of scope
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.chat.routing import QueryPlan
+
 
 @dataclass(frozen=True)
 class TurnBudget:
@@ -34,6 +36,6 @@ BROAD_TURN_BUDGET = TurnBudget(
 DEFAULT_TURN_BUDGET = STANDARD_TURN_BUDGET
 
 
-def budget_for_plan(plan: "QueryPlan") -> TurnBudget:  # type: ignore[name-defined]
+def budget_for_plan(plan: QueryPlan) -> TurnBudget:
     # Broad budget for multi-company plans, standard otherwise.
     return BROAD_TURN_BUDGET if len(set(plan.tickers)) > 1 else STANDARD_TURN_BUDGET

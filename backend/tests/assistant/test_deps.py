@@ -4,7 +4,7 @@ from uuid import UUID
 from app.assistant.deps import DocumentAgentDeps
 from app.assistant.evidence import EvidenceRegistry
 from app.assistant.outputs import GroundedAnswer
-from app.chat.turn_budget import DEFAULT_TURN_BUDGET, TurnBudget
+from app.chat.turn_budget import DEFAULT_TURN_BUDGET
 from app.chat.usage import TurnUsage
 from app.retrieval.types import RetrievalResult, SourcePassage
 

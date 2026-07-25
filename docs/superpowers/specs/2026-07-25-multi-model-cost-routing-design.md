@@ -86,7 +86,8 @@ A strict structured response from the router containing:
 - companies or tickers;
 - fiscal years;
 - requested metrics, segments, and themes;
-- one to five focused retrieval queries;
+- one to three primary retrieval queries;
+- up to two reserve queries for a single coverage expansion;
 - required coverage dimensions; and
 - whether narrative synthesis is required.
 
@@ -105,7 +106,7 @@ Two profiles are available:
 - standard: at most 3 queries, 5 hits per query, and 8 unique passages;
 - broad comparison: at most 5 queries, 5 hits per query, and 15 unique passages.
 
-The broad profile is allowed only when the validated plan spans multiple companies or requires coverage that cannot fit the standard profile. Retrieval remains deduplicated by chunk UUID.
+The broad profile is allowed only when the validated plan spans multiple companies or requires coverage that cannot fit the standard profile. Retrieval remains deduplicated by chunk UUID. After primary retrieval, the backend compares evidence ticker/year metadata with the plan's required coverage. It may execute the reserve queries once, within the same total query and passage caps, before fact extraction.
 
 ### Structured fact extractor
 
@@ -128,7 +129,7 @@ The backend decides the next step without another classifier call:
 - `extractive` + sufficient coverage: use the router/extractor model to produce `GroundedDraft`;
 - `synthesis`: call the selected synthesis model with the question, validated facts, missing-coverage notes, and compact supporting excerpts;
 - `boundary`: call the selected synthesis model only when needed to explain the evidence boundary; otherwise return a grounded limitation;
-- insufficient coverage: permit one focused retrieval expansion within the active profile, then qualify or refuse.
+- missing coverage after extraction: qualify the answer or refuse; retrieval expansion has already been decided from evidence metadata before this stage.
 
 ### Grounded finalizer
 
@@ -144,13 +145,14 @@ The existing finalizer remains authoritative:
 
 1. Receive the latest user question and selected synthesis model.
 2. Run the cheap router once and validate `QueryPlan`.
-3. Execute one batched retrieval operation under the selected budget profile.
-4. Register compact evidence aliases and run cheap fact extraction.
-5. Validate aliases, numerical values, and coverage.
-6. Use the cheap model for a complete extractive answer, or escalate compact facts and excerpts to the synthesis model.
-7. Finalize aliases into trusted citations and validate grounding.
-8. If necessary, run one no-retrieval citation correction.
-9. Persist and stream the unchanged frontend wire format.
+3. Execute the primary batched retrieval operation under the selected budget profile.
+4. Compare retrieved ticker/year metadata with required coverage and, if needed, execute reserve queries once within the same caps.
+5. Register compact evidence aliases and run cheap fact extraction.
+6. Validate aliases, numerical values, and coverage.
+7. Use the cheap model for a complete extractive answer, or escalate compact facts and excerpts to the synthesis model.
+8. Finalize aliases into trusted citations and validate grounding.
+9. If necessary, run one no-retrieval citation correction.
+10. Persist and stream the unchanged frontend wire format.
 
 No stage receives previous chat turns. The synthesis model does not receive router messages, extraction prompts, database objects, or the complete PydanticAI tool history.
 

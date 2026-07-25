@@ -140,6 +140,37 @@ def test_draft_numeric_claim_allows_supported_multiple_numbers() -> None:
     validate_draft_numeric_claims(draft, registry)
 
 
+@pytest.mark.parametrize(
+    ("claim", "source"),
+    [
+        ("Revenue rose 25 percent [1].", "Revenue rose 24 percent."),
+        ("Revenue was €10 [1].", "Revenue was €9."),
+        ("Revenue was £ 10 [1].", "Revenue was £ 9."),
+    ],
+)
+def test_draft_numeric_claim_rejects_unsupported_percent_and_currency_forms(
+    claim: str,
+    source: str,
+) -> None:
+    with pytest.raises(ValueError, match="unsupported numeric claim"):
+        validate_draft_numeric_claims(_draft(claim, "E1"), _registry(source))
+
+
+@pytest.mark.parametrize(
+    ("claim", "source"),
+    [
+        ("Revenue rose 25 percent [1].", "Revenue rose 25%."),
+        ("Revenue was €10 [1].", "Revenue was $10."),
+        ("Revenue was £ 10 [1].", "Revenue was €10."),
+    ],
+)
+def test_draft_numeric_claim_allows_supported_percent_and_currency_forms(
+    claim: str,
+    source: str,
+) -> None:
+    validate_draft_numeric_claims(_draft(claim, "E1"), _registry(source))
+
+
 def test_synthesis_route_rejects_extractive_draft() -> None:
     extraction = FactExtraction(
         facts=[

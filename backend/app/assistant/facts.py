@@ -68,9 +68,8 @@ _YEAR_REFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _SUBSTANTIVE_NUMERIC_RE = re.compile(
-    r"[$%]"
-    r"|\$\s*\d+(?:\.\d+)?"
-    r"|\b\d+(?:\.\d+)?(?:%|\s*(?:million|billion|trillion|bn|m|b)\b)",
+    r"[$€£]\s*\d+(?:\.\d+)?"
+    r"|\b\d+(?:\.\d+)?\s*(?:%|percent\b|million\b|billion\b|trillion\b|bn\b|m\b|b\b)",
     re.IGNORECASE,
 )
 

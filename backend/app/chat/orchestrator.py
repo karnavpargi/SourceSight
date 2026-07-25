@@ -36,6 +36,14 @@ from app.assistant.finalize import finalize_grounded_draft
 from app.assistant.outputs import GroundedAnswer, GroundedDraft
 from app.assistant.router import run_query_router
 from app.chat.activity_summary import group_activity_steps, merge_activity_log
+from app.chat.agent_events import (
+    ROUTED_STAGE_EXTRACT,
+    ROUTED_STAGE_FALLBACK,
+    ROUTED_STAGE_RETRIEVE,
+    ROUTED_STAGE_ROUTE,
+    ROUTED_STAGE_SYNTHESIZE,
+    start_routed_stage,
+)
 from app.chat.generation import ChatGenerationConfig
 from app.chat.models_catalog import ResolvedChatModel, resolve_router_model
 from app.chat.messages import TurnActivityData
@@ -64,9 +72,7 @@ from app.database.chats import AttachCitationInput
 from app.database.session import session_scope
 from app.grounding.validator import GroundingError
 from app.grounding.repair import repair_grounded_answer
-from app.retrieval.chunk_lookup import chunk_not_found_retry
 from app.retrieval.document_retriever import SessionPerCallDocumentRetriever
-from app.retrieval.retriever import _load_neighbor_passages
 from app.retrieval.coverage import CorpusCoverage, load_corpus_coverage
 from app.retrieval.planned import retrieve_for_plan
 from app.retrieval.types import RetrievalResult, SourcePassage
@@ -198,58 +204,9 @@ class _RecordingRetriever:
         self._update("Analyzing retrieved passages...", detail=detail)
         return passages
 
-    def read_chunk(self, chunk_id: UUID) -> SourcePassage:
-        cached = self.seen.get(chunk_id)
-        if cached is not None:
-            return cached
-
-        self._update("Reading filing passage...", detail=f"Chunk {chunk_id}")
-        try:
-            passage = self.inner.read_chunk(chunk_id)
-        except ValueError as exc:
-            raise chunk_not_found_retry(chunk_id) from exc
-        self._record([passage])
-        self._update("Analyzing retrieved passages...")
-        return passage
-
-    def read_surrounding_chunks(
-        self,
-        chunk_id: UUID,
-        *,
-        window: int = 1,
-    ) -> list[SourcePassage]:
-        self._update(
-            "Reading surrounding context...",
-            detail=f"Chunk {chunk_id} · window ±{window}",
-        )
-        try:
-            passages = self.inner.read_surrounding_chunks(chunk_id, window=window)
-        except ValueError as exc:
-            cached = self.seen.get(chunk_id)
-            if cached is None:
-                raise chunk_not_found_retry(chunk_id) from exc
-            passages = self._neighbors_for_cached_anchor(cached, window=window)
-        self._record(passages)
-        self._update("Analyzing retrieved passages...")
-        return passages
-
     def _update(self, label: str, *, detail: str | None = None) -> None:
         if self.activity is not None:
             self.activity.update_active(label, detail=detail)
-
-    def _neighbors_for_cached_anchor(
-        self,
-        anchor: SourcePassage,
-        *,
-        window: int,
-    ) -> list[SourcePassage]:
-        with session_scope() as session:
-            return _load_neighbor_passages(
-                session,
-                [anchor],
-                neighbor_window=window,
-                existing_chunk_ids={anchor.chunk_id},
-            )
 
     def _record(self, passages: list[SourcePassage]) -> None:
         for passage in passages:
@@ -625,8 +582,11 @@ async def _run_routed_turn(
     usage = TurnUsage()
     recording_retriever = _RecordingRetriever(inner=retriever, activity=activity)
 
+    route_step_id: str | None = None
     router_model = resolve_router_model()
     router_failed = False
+    if activity is not None:
+        route_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_ROUTE)
     if router_model is None:
         plan = fallback_query_plan(user_text)
         router_failed = True
@@ -649,12 +609,21 @@ async def _run_routed_turn(
             )
             plan = fallback_query_plan(user_text)
             router_failed = True
+    if activity is not None and route_step_id is not None:
+        activity.end(route_step_id, kind=ROUTED_STAGE_ROUTE, label="Plan ready")
 
     validated = validate_query_plan(plan, coverage)
     budget: TurnBudget = budget_for_plan(validated.plan)
     usage.route = plan.route
     usage.budget_profile = "broad" if budget is BROAD_TURN_BUDGET else "standard"
 
+    retrieve_step_id: str | None = None
+    if activity is not None:
+        retrieve_step_id = start_routed_stage(
+            activity,
+            stage=ROUTED_STAGE_RETRIEVE,
+            bind_active=True,
+        )
     retrieval = await asyncio.to_thread(
         retrieve_for_plan,
         recording_retriever,
@@ -662,12 +631,17 @@ async def _run_routed_turn(
         budget,
         usage,
     )
+    if activity is not None and retrieve_step_id is not None:
+        activity.end(retrieve_step_id, kind=ROUTED_STAGE_RETRIEVE, label="Evidence retrieved")
     usage.retrieval_expanded = retrieval.expanded
 
     evidence = EvidenceRegistry(max_passages=budget.max_unique_passages)
     evidence.register(retrieval.passages)
 
     if router_failed:
+        fallback_step_id: str | None = None
+        if activity is not None:
+            fallback_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_FALLBACK)
         draft = await run_direct_fallback(
             user_text,
             evidence,
@@ -676,8 +650,13 @@ async def _run_routed_turn(
             usage,
             max_tokens=budget.synthesis_output_tokens,
         )
+        if activity is not None and fallback_step_id is not None:
+            activity.end(fallback_step_id, kind=ROUTED_STAGE_FALLBACK, label="Draft ready")
     else:
         assert router_model is not None
+        extract_step_id: str | None = None
+        if activity is not None:
+            extract_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_EXTRACT)
         extraction = await run_fact_extractor(
             user_text,
             plan,
@@ -687,6 +666,8 @@ async def _run_routed_turn(
             usage,
             max_tokens=budget.extractor_output_tokens,
         )
+        if activity is not None and extract_step_id is not None:
+            activity.end(extract_step_id, kind=ROUTED_STAGE_EXTRACT, label="Facts extracted")
         checked = validate_extraction(extraction, evidence, route=plan.route)
         merged_missing_scope = tuple(
             dict.fromkeys([*retrieval.missing_scope, *checked.missing_scope])
@@ -701,6 +682,9 @@ async def _run_routed_turn(
         if plan.route == "extractive" and merged_checked.draft is not None:
             draft = merged_checked.draft
         else:
+            synth_step_id: str | None = None
+            if activity is not None:
+                synth_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_SYNTHESIZE)
             draft = await run_synthesis(
                 user_text,
                 plan,
@@ -711,6 +695,8 @@ async def _run_routed_turn(
                 usage,
                 max_tokens=budget.synthesis_output_tokens,
             )
+            if activity is not None and synth_step_id is not None:
+                activity.end(synth_step_id, kind=ROUTED_STAGE_SYNTHESIZE, label="Draft ready")
 
     answer = finalize_grounded_draft(draft, evidence)
     return answer, recording_retriever.retrieved_passages, evidence, usage

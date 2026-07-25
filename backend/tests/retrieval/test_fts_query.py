@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from app.retrieval.fts_query import fts_query_variants, parse_full_text_query
 
 

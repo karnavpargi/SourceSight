@@ -123,6 +123,35 @@ def test_embedding_provider_accepts_none_without_google_key() -> None:
     assert settings.embedding_provider == "none"
 
 
+def test_router_model_defaults_to_flash_lite() -> None:
+    settings = Settings(
+        supabase_url="https://example.supabase.co",
+        supabase_anon_key="anon",
+        supabase_service_role_key="service",
+        database_url="postgresql://postgres:pw@localhost:5432/postgres",
+        allowed_origins=["http://localhost:5173"],
+        chat_provider="google",
+        google_api_key="key",
+        _env_file=None,
+    )
+    assert settings.chat_router_model == "gemini-2.0-flash-lite"
+
+
+def test_model_prices_parse_exact_model_ids() -> None:
+    settings = Settings(
+        supabase_url="https://example.supabase.co",
+        supabase_anon_key="anon",
+        supabase_service_role_key="service",
+        database_url="postgresql://postgres:pw@localhost:5432/postgres",
+        allowed_origins=["http://localhost:5173"],
+        chat_provider="google",
+        google_api_key="key",
+        chat_model_prices={"gemini-3.5-flash-lite": (0.30, 2.50)},
+        _env_file=None,
+    )
+    assert settings.chat_model_prices["gemini-3.5-flash-lite"] == (0.30, 2.50)
+
+
 def test_embedding_provider_rejects_unknown_value() -> None:
     with pytest.raises(ValueError, match="embedding_provider"):
         Settings(

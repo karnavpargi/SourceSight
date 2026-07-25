@@ -22,19 +22,45 @@ from supabase import AsyncClient
 
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
-from app.assistant.agent import build_document_agent_model, document_agent
-from app.assistant.deps import DocumentAgentDeps, DocumentRetriever, GroundingValidator
-from app.assistant.outputs import GroundedAnswer
-from app.chat.activity_summary import group_activity_steps, merge_activity_log
-from app.chat.agent_events import agent_event_stream_handler
-from app.chat.generation import (
-    ChatGenerationConfig,
-    build_model_settings,
+from app.assistant.agent import build_document_agent_model
+from app.assistant.composer import (
+    run_citation_correction,
+    run_direct_fallback,
+    run_synthesis,
 )
-from app.chat.models_catalog import ResolvedChatModel
+from app.assistant.deps import DocumentRetriever, GroundingValidator
+from app.assistant.evidence import EvidenceRegistry
+from app.assistant.extractor import run_fact_extractor
+from app.assistant.facts import (
+    ValidatedExtraction,
+    validate_draft_numeric_claims,
+    validate_extraction,
+)
+from app.assistant.finalize import finalize_grounded_draft
+from app.assistant.outputs import GroundedAnswer
+from app.assistant.router import run_query_router
+from app.chat.activity_summary import group_activity_steps, merge_activity_log
+from app.chat.agent_events import (
+    ROUTED_STAGE_EXTRACT,
+    ROUTED_STAGE_FALLBACK,
+    ROUTED_STAGE_RETRIEVE,
+    ROUTED_STAGE_ROUTE,
+    ROUTED_STAGE_SYNTHESIZE,
+    start_routed_stage,
+)
+from app.chat.generation import ChatGenerationConfig
+from app.chat.models_catalog import ResolvedChatModel, resolve_router_model
 from app.chat.messages import TurnActivityData
 from app.chat.persistence import assistant_answer_to_wire
+from app.chat.routing import fallback_query_plan, validate_query_plan
 from app.chat.turn_activity import TurnActivityEmitter
+from app.chat.turn_budget import (
+    BROAD_TURN_BUDGET,
+    STANDARD_TURN_BUDGET,
+    TurnBudget,
+    budget_for_plan,
+)
+from app.chat.usage import TurnUsage
 from app.chat.streaming import (
     format_activity_event,
     format_progress_event,
@@ -43,16 +69,16 @@ from app.chat.streaming import (
     stream_grounded_answer_events,
     stream_ui_message_text,
 )
-from app.config import ChatProvider
+from app.config import ChatProvider, settings
 from app.chat.thread_titles import DEFAULT_THREAD_TITLE, derive_thread_title
 from app.database import chats as chat_store
 from app.database.chats import AttachCitationInput
 from app.database.session import session_scope
 from app.grounding.validator import GroundingError
 from app.grounding.repair import repair_grounded_answer
-from app.retrieval.chunk_lookup import chunk_not_found_retry
 from app.retrieval.document_retriever import SessionPerCallDocumentRetriever
-from app.retrieval.retriever import _load_neighbor_passages
+from app.retrieval.coverage import CorpusCoverage, load_corpus_coverage
+from app.retrieval.planned import retrieve_for_plan
 from app.retrieval.types import RetrievalResult, SourcePassage
 
 REFUSAL_MESSAGE = "This corpus doesn't contain enough evidence to answer that."
@@ -128,25 +154,6 @@ def _is_unsupported_tool_model_error(exc: BaseException) -> bool:
     return "function calling is not enabled" in str(exc).casefold()
 
 
-def _token_usage_fields(run: object) -> dict[str, int | None]:
-    usage = getattr(run, "usage", None)
-    if callable(usage):
-        usage = usage()
-    if usage is None:
-        return {"input_tokens": None, "output_tokens": None}
-
-    input_tokens = getattr(usage, "input_tokens", None)
-    if input_tokens is None:
-        input_tokens = getattr(usage, "request_tokens", None)
-    output_tokens = getattr(usage, "output_tokens", None)
-    if output_tokens is None:
-        output_tokens = getattr(usage, "response_tokens", None)
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
-
-
 def _log_turn_complete(
     *,
     outcome: str,
@@ -154,8 +161,15 @@ def _log_turn_complete(
     model: str,
     started_at: float,
     citation_count: int = 0,
+    usage: TurnUsage | None = None,
     **extra: object,
 ) -> None:
+    usage_fields: dict[str, int] = {}
+    estimated_cost_usd = None
+    if usage is not None:
+        usage_fields = usage.as_log_fields()
+        estimated_cost_usd = usage.estimated_cost_usd(settings.chat_model_prices)
+
     logger.info(
         "chat.turn_complete",
         outcome=outcome,
@@ -163,6 +177,8 @@ def _log_turn_complete(
         model=model,
         latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
         citation_count=citation_count,
+        estimated_cost_usd=estimated_cost_usd,
+        **usage_fields,
         **extra,
     )
 
@@ -184,58 +200,30 @@ class _RecordingRetriever:
         self._update("Analyzing retrieved passages...", detail=detail)
         return result
 
-    def read_chunk(self, chunk_id: UUID) -> SourcePassage:
-        cached = self.seen.get(chunk_id)
-        if cached is not None:
-            return cached
-
-        self._update("Reading filing passage...", detail=f"Chunk {chunk_id}")
-        try:
-            passage = self.inner.read_chunk(chunk_id)
-        except ValueError as exc:
-            raise chunk_not_found_retry(chunk_id) from exc
-        self._record([passage])
-        self._update("Analyzing retrieved passages...")
-        return passage
-
-    def read_surrounding_chunks(
+    def search_filings_batch(
         self,
-        chunk_id: UUID,
+        queries: list[str],
         *,
-        window: int = 1,
+        limit_per_query: int = 5,
     ) -> list[SourcePassage]:
+        joined = " | ".join(q for q in queries if q)
         self._update(
-            "Reading surrounding context...",
-            detail=f"Chunk {chunk_id} · window ±{window}",
+            "Searching indexed filings...",
+            detail=joined or None,
         )
-        try:
-            passages = self.inner.read_surrounding_chunks(chunk_id, window=window)
-        except ValueError as exc:
-            cached = self.seen.get(chunk_id)
-            if cached is None:
-                raise chunk_not_found_retry(chunk_id) from exc
-            passages = self._neighbors_for_cached_anchor(cached, window=window)
+        passages = self.inner.search_filings_batch(
+            queries,
+            limit_per_query=limit_per_query,
+        )
         self._record(passages)
-        self._update("Analyzing retrieved passages...")
+        hit_count = len(passages)
+        detail = f"{hit_count} passage{'s' if hit_count != 1 else ''} found"
+        self._update("Analyzing retrieved passages...", detail=detail)
         return passages
 
     def _update(self, label: str, *, detail: str | None = None) -> None:
         if self.activity is not None:
             self.activity.update_active(label, detail=detail)
-
-    def _neighbors_for_cached_anchor(
-        self,
-        anchor: SourcePassage,
-        *,
-        window: int,
-    ) -> list[SourcePassage]:
-        with session_scope() as session:
-            return _load_neighbor_passages(
-                session,
-                [anchor],
-                neighbor_window=window,
-                existing_chunk_ids={anchor.chunk_id},
-            )
 
     def _record(self, passages: list[SourcePassage]) -> None:
         for passage in passages:
@@ -310,6 +298,8 @@ async def _stream_chat_turn(
     activity = TurnActivityEmitter()
     activity_log: list[TurnActivityData] = []
     last_progress = "Analyzing your question..."
+    usage: TurnUsage | None = None
+    evidence: EvidenceRegistry | None = None
 
     def emit_activity_updates() -> list[str]:
         nonlocal last_progress
@@ -352,7 +342,7 @@ async def _stream_chat_turn(
             yield event
             await asyncio.sleep(0)
 
-        answer, retrieved_passages = agent_task.result()
+        answer, retrieved_passages, evidence, usage = agent_task.result()
         for event in emit_activity_updates():
             yield event
             await asyncio.sleep(0)
@@ -364,6 +354,7 @@ async def _stream_chat_turn(
             model=chat_model.model,
             error_type=type(exc).__name__,
             status_code=getattr(exc, "status_code", None),
+            error_message=str(exc)[:500],
         )
         await chat_store.append_message(
             client,
@@ -385,6 +376,7 @@ async def _stream_chat_turn(
             provider=chat_model.provider,
             model=chat_model.model,
             started_at=turn_started,
+            usage=usage,
         )
         return
     except Exception as exc:
@@ -447,6 +439,7 @@ async def _stream_chat_turn(
             model=chat_model.model,
             started_at=turn_started,
             error_type=type(exc).__name__,
+            usage=usage,
         )
         return
 
@@ -464,40 +457,52 @@ async def _stream_chat_turn(
         )
     except GroundingError as exc:
         grounding_error = exc
-        if answer.citations and retrieved_passages:
+        if (
+            answer.citations
+            and retrieved_passages
+            and evidence is not None
+            and usage is not None
+        ):
             logger.info(
-                "chat.grounding_retry",
-                reason=str(exc),
+                "chat.grounding_correction",
+                error_type=type(exc).__name__,
                 retrieved_passage_count=len(retrieved_passages),
                 citation_count=len(answer.citations),
                 provider=chat_model.provider,
                 model=chat_model.model,
             )
             try:
-                answer, retrieved_passages = await _run_agent_grounding_retry(
-                    user_text,
-                    grounding_error=str(exc),
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    chat_model=chat_model,
+                draft = await run_citation_correction(
+                    question=user_text,
+                    failed_answer=answer.answer,
+                    grounding_error=exc,
+                    evidence=evidence,
+                    model=build_document_agent_model(chat_model.provider, chat_model.model),
+                    model_name=chat_model.model,
                     generation=generation,
-                    grounding_validator=grounding_validator,
-                    retriever=retriever,
-                    activity=activity,
+                    usage=usage,
+                    max_tokens=STANDARD_TURN_BUDGET.correction_output_tokens,
                 )
+                usage.record_correction()
+                answer = finalize_grounded_draft(draft, evidence)
+                retrieved_passages = evidence.all_passages()
                 answer = _finalize_grounded_answer(
                     answer,
                     retrieved_passages,
                     grounding_validator,
                 )
                 grounding_error = None
-            except GroundingError as retry_exc:
-                grounding_error = retry_exc
+            except (GroundingError, ValueError) as retry_exc:
+                grounding_error = (
+                    retry_exc
+                    if isinstance(retry_exc, GroundingError)
+                    else GroundingError("citation correction produced an invalid draft")
+                )
 
     if grounding_error is not None:
         logger.warning(
             "chat.grounding_failed",
-            reason=str(grounding_error),
+            error_type=type(grounding_error).__name__,
             retrieved_passage_count=len(retrieved_passages),
             citation_count=len(answer.citations),
             provider=chat_model.provider,
@@ -527,6 +532,7 @@ async def _stream_chat_turn(
             provider=chat_model.provider,
             model=chat_model.model,
             started_at=turn_started,
+            usage=usage,
         )
         return
 
@@ -561,6 +567,7 @@ async def _stream_chat_turn(
         model=chat_model.model,
         started_at=turn_started,
         citation_count=len(answer.citations),
+        usage=usage,
     )
 
 
@@ -574,35 +581,6 @@ def _finalize_grounded_answer(
     return answer
 
 
-async def _run_agent_grounding_retry(
-    user_text: str,
-    *,
-    grounding_error: str,
-    user_id: UUID,
-    thread_id: UUID,
-    chat_model: ResolvedChatModel,
-    generation: ChatGenerationConfig,
-    grounding_validator: GroundingValidator,
-    retriever: DocumentRetriever | None,
-    activity: TurnActivityEmitter | None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
-    retry_prompt = (
-        f"{user_text}\n\n---\n"
-        f"Your previous answer failed grounding validation: {grounding_error}\n"
-        f"{_GROUNDING_RETRY_FEEDBACK}"
-    )
-    return await _run_agent(
-        retry_prompt,
-        user_id=user_id,
-        thread_id=thread_id,
-        chat_model=chat_model,
-        generation=generation,
-        grounding_validator=grounding_validator,
-        activity=activity,
-        retriever=retriever,
-    )
-
-
 async def _run_agent(
     user_text: str,
     *,
@@ -613,12 +591,14 @@ async def _run_agent(
     grounding_validator: GroundingValidator,
     activity: TurnActivityEmitter | None = None,
     retriever: DocumentRetriever | None = None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
+    coverage: CorpusCoverage | None = None,
+) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
     if activity is not None:
         activity.start_thinking(f"Thinking with {chat_model.model}...")
 
     inner = retriever if retriever is not None else SessionPerCallDocumentRetriever()
-    return await _run_agent_with_retriever(
+    resolved_coverage = coverage or await asyncio.to_thread(_load_turn_coverage)
+    answer, passages, evidence, usage = await _run_routed_turn(
         user_text,
         user_id=user_id,
         thread_id=thread_id,
@@ -626,63 +606,159 @@ async def _run_agent(
         generation=generation,
         grounding_validator=grounding_validator,
         retriever=inner,
+        coverage=resolved_coverage,
         activity=activity,
     )
+    if activity is not None:
+        activity.end_thinking()
+    return answer, passages, evidence, usage
 
 
-async def _run_agent_with_retriever(
+def _load_turn_coverage() -> CorpusCoverage:
+    with session_scope() as session:
+        return load_corpus_coverage(session)
+
+
+async def _run_routed_turn(
     user_text: str,
     *,
     user_id: UUID,
     thread_id: UUID,
     chat_model: ResolvedChatModel,
     generation: ChatGenerationConfig,
-    grounding_validator: GroundingValidator,
+    grounding_validator: GroundingValidator,  # kept for parity with task brief
     retriever: DocumentRetriever,
+    coverage: CorpusCoverage,
     activity: TurnActivityEmitter | None,
-) -> tuple[GroundedAnswer, list[SourcePassage]]:
-    recording_retriever = _RecordingRetriever(
-        inner=retriever,
-        activity=activity,
-    )
-    deps = DocumentAgentDeps(
-        user_id=user_id,
-        thread_id=thread_id,
-        retriever=recording_retriever,
-        grounding_validator=grounding_validator,
-    )
-    agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
-    model_settings = build_model_settings(generation)
+) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
+    _ = (user_id, thread_id, grounding_validator)
+    usage = TurnUsage()
+    recording_retriever = _RecordingRetriever(inner=retriever, activity=activity)
 
-    async def event_handler(ctx, events):
-        if activity is None:
-            async for _event in events:
-                pass
-            return
-        await agent_event_stream_handler(
-            activity,
-            model_name=chat_model.model,
-            _ctx=ctx,
-            events=events,
-        )
-
-    with document_agent.override(model=agent_model):
-        run = await document_agent.run(
-            user_text,
-            deps=deps,
-            model_settings=model_settings,
-            event_stream_handler=event_handler if activity is not None else None,
-        )
+    route_step_id: str | None = None
+    router_model = resolve_router_model()
+    router_failed = False
     if activity is not None:
-        activity.end_thinking()
-    logger.info(
-        "chat.agent_complete",
-        provider=chat_model.provider,
-        model=chat_model.model,
-        retrieved_passage_count=len(recording_retriever.retrieved_passages),
-        **_token_usage_fields(run),
+        route_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_ROUTE)
+    if router_model is None:
+        plan = fallback_query_plan(user_text)
+        router_failed = True
+    else:
+        try:
+            plan = await run_query_router(
+                user_text,
+                coverage,
+                build_document_agent_model(router_model.provider, router_model.model),
+                generation,
+                usage,
+                max_tokens=STANDARD_TURN_BUDGET.router_output_tokens,
+            )
+        except (ModelHTTPError, UnexpectedModelBehavior, ValueError) as exc:
+            logger.warning(
+                "chat.router_fallback",
+                provider=router_model.provider,
+                model=router_model.model,
+                error_type=type(exc).__name__,
+            )
+            plan = fallback_query_plan(user_text)
+            router_failed = True
+    if activity is not None and route_step_id is not None:
+        activity.end(route_step_id, kind=ROUTED_STAGE_ROUTE, label="Plan ready")
+
+    validated = validate_query_plan(plan, coverage)
+    budget: TurnBudget = budget_for_plan(validated.plan)
+    usage.route = plan.route
+    usage.budget_profile = "broad" if budget is BROAD_TURN_BUDGET else "standard"
+
+    retrieve_step_id: str | None = None
+    if activity is not None:
+        retrieve_step_id = start_routed_stage(
+            activity,
+            stage=ROUTED_STAGE_RETRIEVE,
+            bind_active=True,
+        )
+    retrieval = await asyncio.to_thread(
+        retrieve_for_plan,
+        recording_retriever,
+        validated,
+        budget,
+        usage,
     )
-    return run.output, recording_retriever.retrieved_passages
+    if activity is not None and retrieve_step_id is not None:
+        activity.end(retrieve_step_id, kind=ROUTED_STAGE_RETRIEVE, label="Evidence retrieved")
+    usage.retrieval_expanded = retrieval.expanded
+
+    evidence = EvidenceRegistry(max_passages=budget.max_unique_passages)
+    evidence.register(retrieval.passages)
+
+    if router_failed:
+        fallback_step_id: str | None = None
+        if activity is not None:
+            fallback_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_FALLBACK)
+        draft = await run_direct_fallback(
+            user_text,
+            evidence,
+            build_document_agent_model(chat_model.provider, chat_model.model),
+            generation,
+            usage,
+            max_tokens=budget.synthesis_output_tokens,
+        )
+        if activity is not None and fallback_step_id is not None:
+            activity.end(fallback_step_id, kind=ROUTED_STAGE_FALLBACK, label="Draft ready")
+    else:
+        assert router_model is not None
+        extract_step_id: str | None = None
+        if activity is not None:
+            extract_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_EXTRACT)
+        extraction = await run_fact_extractor(
+            user_text,
+            plan,
+            evidence,
+            build_document_agent_model(router_model.provider, router_model.model),
+            generation,
+            usage,
+            max_tokens=budget.extractor_output_tokens,
+        )
+        if activity is not None and extract_step_id is not None:
+            activity.end(extract_step_id, kind=ROUTED_STAGE_EXTRACT, label="Facts extracted")
+        checked = validate_extraction(extraction, evidence, route=plan.route)
+        merged_missing_scope = tuple(
+            dict.fromkeys([*retrieval.missing_scope, *checked.missing_scope])
+        )
+        merged_checked = ValidatedExtraction(
+            facts=checked.facts,
+            missing_scope=merged_missing_scope,
+            conflicts=checked.conflicts,
+            draft=checked.draft,
+            validation_errors=checked.validation_errors,
+        )
+        if plan.route == "extractive" and merged_checked.draft is not None:
+            draft = merged_checked.draft
+        else:
+            synth_step_id: str | None = None
+            if activity is not None:
+                synth_step_id = start_routed_stage(activity, stage=ROUTED_STAGE_SYNTHESIZE)
+            draft = await run_synthesis(
+                user_text,
+                plan,
+                merged_checked,
+                evidence,
+                build_document_agent_model(chat_model.provider, chat_model.model),
+                generation,
+                usage,
+                max_tokens=budget.synthesis_output_tokens,
+            )
+            if activity is not None and synth_step_id is not None:
+                activity.end(synth_step_id, kind=ROUTED_STAGE_SYNTHESIZE, label="Draft ready")
+
+    try:
+        validate_draft_numeric_claims(draft, evidence)
+        answer = finalize_grounded_draft(draft, evidence)
+    except ValueError:
+        # If the draft referenced an unknown evidence alias, refuse rather than
+        # crashing the turn (the grounding contract forbids invented sources).
+        answer = GroundedAnswer(answer=REFUSAL_MESSAGE, citations=[], cited_passages=[])
+    return answer, recording_retriever.retrieved_passages, evidence, usage
 
 
 async def _persist_assistant_answer(

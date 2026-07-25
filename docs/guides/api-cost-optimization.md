@@ -45,7 +45,7 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 3. Tools return a **compact evidence** shape: evidence alias (`E1`…`E8`), content, ticker, fiscal year, section. No UUID / filing metadata dump in model context.
 4. Model outputs a **`GroundedDraft`**: answer text + citations that reference evidence aliases and short excerpts. Model never emits full `SourcePassage` objects or chunk UUIDs.
 5. Backend **finalizer** maps aliases → trusted `SourcePassage` records from the turn evidence registry, builds UUID citations, and hydrates `cited_passages` for the existing API/UI contract.
-6. Generation has a hard **output budget (~1,000–2,000 tokens)** and a bounded model-request / tool-call budget.
+6. Generation has a hard **output budget (2,800 tokens)** so structured `GroundedDraft` JSON is less likely to truncate mid-object, plus a bounded model-request / tool-call budget.
 7. On grounding failure: **deterministic repair first**; if needed, **one compact citation-only correction** using already-retrieved evidence and **no retrieval tools**. Second failure → existing refusal message.
 8. Every turn logs cumulative model calls, embedding calls, passages, input/output tokens, correction usage.
 
@@ -68,6 +68,35 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 - Search-budget exhaustion → best partial grounded answer or refusal.
 - Auth, persistence, streaming, and frontend wire format stay unchanged.
 
+## Multi-model routing
+
+SourceSight uses an **extract-first, escalate-only** flow:
+
+- **Router + extractor model**: configured by `CHAT_ROUTER_MODEL` (intended to be a low-cost Flash-Lite model).
+- **Synthesis model**: the model selected on each `/chat/stream` request (often `CHAT_MODEL` in local defaults).
+
+Stage limits (per turn):
+
+- **Calls**: 1 router, 1 extractor, 0–1 synthesis, 0–1 citation correction.
+- **Retrieval**:
+  - **standard**: ≤3 queries, 5 hits/query, 8 unique passages
+  - **broad**: ≤5 queries, 5 hits/query, 15 unique passages
+
+Fallback behavior:
+
+- If the router model is unavailable or fails, the turn falls back to a bounded direct draft using the selected synthesis model (no extra router retry).
+
+Operator configuration (example):
+
+```dotenv
+CHAT_ROUTER_MODEL=gemini-2.0-flash-lite
+CHAT_MODEL=gemini-3.5-flash-lite
+# Optional JSON: {"exact-model-id":[input_usd_per_1m,output_usd_per_1m]}
+CHAT_MODEL_PRICES={}
+```
+
+Prices are **operator-configured** and must match the provider’s **exact** model IDs; unknown prices produce `estimated_cost_usd=null` in logs.
+
 ## Success criteria (same Amazon question)
 
 - Gemini generation calls ≤ 4 (including optional correction)
@@ -88,6 +117,27 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 6. Regression: grounding validator still rejects uncited numbers and invented chunk IDs.
 7. Manual: rerun measured Amazon question; compare spend vs ₹8.13 baseline.
 
+## Live evaluation harness (provider-billed)
+
+Do not report measured ₹ cost unless the provider billing delta is recorded.
+
+For each exact question in `docs/client-brief.md`:
+
+1. Record provider spend before the request.
+2. Send one authenticated `POST /chat/stream` request.
+3. Capture the server log line `chat.turn_complete` (route, budget, per-stage tokens, `estimated_cost_usd`).
+4. Verify: valid citations for normal answers, or a clean grounded refusal.
+5. Record provider spend delta (INR).
+
+Live-results table (fill from logs + billing):
+
+```text
+Question | Route | Budget | Router tokens | Extractor tokens | Synthesis tokens |
+Correction | Passages | Outcome | Provider cost INR
+```
+
+Status: **unmeasured in this branch** unless you can record a real provider billing delta (quota/billing access may block this run).
+
 ## Out of scope
 
 - **Gemini context caching** — can help a little for a large *stable* prefix, but most billed tokens here are dynamic retrieval + tool transcripts + structured output. Caching alone will not hit the ₹1 target. Revisit later if instructions/static corpus prefixes grow large enough for cache minimums.
@@ -98,3 +148,19 @@ Reduce cost to **under ₹1** for this question class **without reducing visible
 ## Expected budget after change
 
 Typical turn: roughly **10k–25k input** and **under 2k output**, targeting **₹0.50–₹1** on current `gemini-3.5-flash-lite` pricing for this question class.
+
+## After optimization (measured 2026-07-24)
+
+Same Amazon AWS vs segment question on `feat/api-cost-optimization`:
+
+| Metric | Before | After (v2, pre-truncate) | Notes |
+|---|---|---|---|
+| Outcome | answered | grounding_refusal | Correction still failed citation markers |
+| Agent runs / corrections | 2 full re-runs | 1 + 1 correction (no re-retrieval) | Spec met for retry shape |
+| Passages | 17 | 8 | Cap met |
+| Input tokens | ~168k | ~81k | Still above 25k budget |
+| Output tokens | ~28k | ~6k | Still above 2k budget |
+| Cost (user-reported) | ₹8.13 | *ask user for delta* | |
+| Later fix | — | truncate evidence to 1200 chars; agent `retries=1` | Commit `e78ca0f`; re-measure blocked by Google `UsageLimitExceeded` |
+
+Success criteria not fully met yet on live traffic. Next: re-measure after quota resets; expect further drop from truncation + fewer retries.

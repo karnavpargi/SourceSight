@@ -4,10 +4,8 @@ from datetime import date
 from unittest.mock import Mock
 from uuid import UUID
 
-import pytest
-from pydantic_ai.exceptions import ModelRetry
-
 from app.chat.orchestrator import _RecordingRetriever
+from app.chat.turn_activity import TurnActivityEmitter
 from app.retrieval.types import SourcePassage
 
 CHUNK_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -32,35 +30,18 @@ def _passage() -> SourcePassage:
     )
 
 
-def test_read_chunk_returns_cached_passage_without_db_lookup() -> None:
+def test_search_filings_batch_records_passages_and_emits_activity_updates() -> None:
     passage = _passage()
     inner = Mock()
-    recorder = _RecordingRetriever(inner=inner)
-    recorder.seen[CHUNK_ID] = passage
+    inner.search_filings_batch.return_value = [passage, passage]
+    emitter = TurnActivityEmitter()
+    recorder = _RecordingRetriever(inner=inner, activity=emitter)
 
-    assert recorder.read_chunk(CHUNK_ID) == passage
-    inner.read_chunk.assert_not_called()
+    step_id = emitter.start("retrieve", "Searching indexed filings...")
+    emitter.bind_active_tool(step_id)
+    result = recorder.search_filings_batch(["NVDA Data Center demand"], limit_per_query=5)
 
-
-def test_read_chunk_raises_model_retry_for_unknown_chunk_id() -> None:
-    inner = Mock()
-    inner.read_chunk.side_effect = ValueError(f"Chunk {CHUNK_ID} not found.")
-    recorder = _RecordingRetriever(inner=inner)
-
-    with pytest.raises(ModelRetry, match="search_filings"):
-        recorder.read_chunk(CHUNK_ID)
-
-
-def test_read_surrounding_chunks_falls_back_to_cached_anchor() -> None:
-    passage = _passage()
-    neighbor = _passage()
-    inner = Mock()
-    inner.read_surrounding_chunks.side_effect = ValueError(f"Chunk {CHUNK_ID} not found.")
-    recorder = _RecordingRetriever(inner=inner)
-    recorder.seen[CHUNK_ID] = passage
-    recorder._neighbors_for_cached_anchor = Mock(return_value=[neighbor])  # type: ignore[method-assign]
-
-    result = recorder.read_surrounding_chunks(CHUNK_ID, window=1)
-
-    assert result == [neighbor]
-    inner.read_surrounding_chunks.assert_called_once_with(CHUNK_ID, window=1)
+    assert result == [passage, passage]
+    assert recorder.retrieved_passages == [passage]
+    updates = emitter.drain()
+    assert any(update.phase == "update" for update in updates)

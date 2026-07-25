@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import httpx
 from pydantic import BaseModel
@@ -119,6 +120,28 @@ def resolve_chat_model(
         )
 
     return ResolvedChatModel(provider=resolved_provider, model=resolved_model)
+
+
+@lru_cache(maxsize=1)
+def _cached_google_model_ids() -> frozenset[str]:
+    return frozenset(option.id for option in list_models("google"))
+
+
+def clear_router_model_cache() -> None:
+    _cached_google_model_ids.cache_clear()
+
+
+def resolve_router_model() -> ResolvedChatModel | None:
+    model = settings.chat_router_model.strip()
+    if not model or not settings.google_api_key.strip():
+        return None
+    try:
+        available = _cached_google_model_ids()
+    except ModelCatalogError:
+        return None
+    if model not in available:
+        return None
+    return ResolvedChatModel(provider="google", model=model)
 
 
 def list_models(provider: ChatProvider) -> list[ChatModelOption]:

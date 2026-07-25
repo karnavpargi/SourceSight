@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -87,3 +89,22 @@ def test_recording_retriever_emits_activity_updates_during_search() -> None:
     updates = emitter.drain()
     assert any(update.phase == "update" for update in updates)
     assert any("indexed filings" in update.label for update in updates)
+
+
+def test_turn_activity_emitter_serializes_worker_thread_state() -> None:
+    emitter = TurnActivityEmitter()
+
+    def emit(worker: int) -> None:
+        step_id = emitter.start("search_filings", f"Searching {worker}")
+        emitter.update(step_id, f"Searching {worker}...")
+        emitter.end(step_id)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(emit, range(32)))
+
+    updates = emitter.drain()
+    orders = [update.order for update in updates]
+
+    assert len(updates) == 96
+    assert orders == list(range(1, 97))
+    assert len({update.order for update in updates}) == len(updates)

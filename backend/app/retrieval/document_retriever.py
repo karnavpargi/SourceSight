@@ -34,6 +34,19 @@ class SessionDocumentRetriever:
             neighbor_window=self.neighbor_window,
         )
 
+    def search_filings_batch(
+        self,
+        queries: list[str],
+        *,
+        limit_per_query: int = 5,
+    ) -> list[SourcePassage]:
+        seen: dict[UUID, SourcePassage] = {}
+        for query in queries:
+            result = self.search_filings(query, limit=limit_per_query)
+            for passage in result.passages:
+                seen.setdefault(passage.chunk_id, passage)
+        return list(seen.values())
+
     def read_chunk(self, chunk_id: UUID) -> SourcePassage:
         chunks = _load_chunks(self.session, [chunk_id])
         chunk = chunks.get(chunk_id)
@@ -96,3 +109,15 @@ class SessionPerCallDocumentRetriever:
                 session,
                 neighbor_window=self.neighbor_window,
             ).read_surrounding_chunks(chunk_id, window=window)
+
+    def search_filings_batch(
+        self,
+        queries: list[str],
+        *,
+        limit_per_query: int = 5,
+    ) -> list[SourcePassage]:
+        with session_scope() as session:
+            return SessionDocumentRetriever(
+                session,
+                neighbor_window=self.neighbor_window,
+            ).search_filings_batch(queries, limit_per_query=limit_per_query)

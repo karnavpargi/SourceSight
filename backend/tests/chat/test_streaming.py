@@ -8,6 +8,7 @@ from app.chat.streaming import (
     STUB_ASSISTANT_REPLY,
     format_ui_message_sse_event,
     stream_grounded_answer,
+    stream_grounded_answer_events,
     stream_ui_message_text,
 )
 from app.retrieval.types import SourcePassage
@@ -81,8 +82,6 @@ def test_stub_reply_is_non_empty() -> None:
 
 
 def test_stream_grounded_answer_emits_progress_and_text() -> None:
-    from app.chat.streaming import format_progress_event, stream_grounded_answer_events
-
     async def collect() -> str:
         parts = [
             chunk

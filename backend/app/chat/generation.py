@@ -12,5 +12,12 @@ class ChatGenerationConfig:
     temperature: float = 1.0
 
 
-def build_model_settings(config: ChatGenerationConfig) -> ModelSettings:
-    return {"temperature": config.temperature}
+def build_model_settings(
+    config: ChatGenerationConfig,
+    *,
+    max_tokens: int,
+) -> ModelSettings:
+    return {
+        "temperature": config.temperature,
+        "max_tokens": max_tokens,
+    }

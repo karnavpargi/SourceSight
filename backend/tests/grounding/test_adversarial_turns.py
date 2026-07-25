@@ -10,10 +10,12 @@ from uuid import UUID
 
 import pytest
 
+from app.assistant.evidence import EvidenceRegistry
 from app.assistant.outputs import Citation, GroundedAnswer
 from app.chat.generation import ChatGenerationConfig
 from app.chat.models_catalog import ResolvedChatModel
 from app.chat.orchestrator import REFUSAL_MESSAGE, run_chat_turn
+from app.chat.usage import TurnUsage
 from app.database.chats import ChatMessageRecord
 from app.grounding.validator import grounding_validator
 from app.retrieval.types import RetrievalResult, SourcePassage
@@ -38,6 +40,14 @@ class StubRetriever:
 
     def search_filings(self, query: str, *, limit: int = 10) -> RetrievalResult:
         return RetrievalResult(query=query, passages=self.passages)
+
+    def search_filings_batch(
+        self,
+        queries: list[str],
+        *,
+        limit_per_query: int = 5,
+    ) -> list[SourcePassage]:
+        return self.passages[: limit_per_query * len(queries)]
 
     def read_chunk(self, chunk_id: UUID) -> SourcePassage:
         raise NotImplementedError(chunk_id)
@@ -166,13 +176,15 @@ def _fake_run_agent_factory(answer: GroundedAnswer, passages: list[SourcePassage
         thread_id: UUID,
         chat_model: ResolvedChatModel,
         generation: ChatGenerationConfig,
-        grounding_validator,
+        grounding_validator,  # unused in stub
         activity=None,
         retriever=None,
-    ) -> tuple[GroundedAnswer, list[SourcePassage]]:
+    ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
         if retriever is not None:
-            retriever.search_filings(user_text)
-        return answer, passages
+            retriever.search_filings_batch([user_text])
+        evidence = EvidenceRegistry()
+        usage = TurnUsage()
+        return answer, passages, evidence, usage
 
     return _fake_run_agent
 

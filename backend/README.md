@@ -81,6 +81,31 @@ Use `app.config.settings` for environment configuration. Do not read environment
 
 Users pick provider and model in the chat UI. The backend exposes `GET /chat/providers` (live catalogs) and requires `provider` + `model` on `POST /chat/stream`.
 
+### Multi-model routing (cost optimization)
+
+The backend uses an **extract-first, escalate-only** pipeline:
+
+- **Router + extractor model** (cheap): `CHAT_ROUTER_MODEL` (validated against Google’s live catalog).
+- **Synthesis model** (per request): the `provider`/`model` selected by the client (often the UI default `CHAT_MODEL`).
+
+Per-turn limits (design):
+
+- **Calls**: 1 router, 1 extractor, 0–1 synthesis, 0–1 citation correction (no full agent retries).
+- **Retrieval**:
+  - standard: ≤3 queries, 5 hits/query, 8 unique passages
+  - broad: ≤5 queries, 5 hits/query, 15 unique passages
+
+Configuration:
+
+```dotenv
+CHAT_ROUTER_MODEL=gemini-2.0-flash-lite
+CHAT_MODEL=gemini-3.5-flash-lite
+# Optional JSON: {"exact-model-id":[input_usd_per_1m,output_usd_per_1m]}
+CHAT_MODEL_PRICES={}
+```
+
+If `CHAT_MODEL_PRICES` contains exact model IDs for every model used in a turn, logs include `estimated_cost_usd`. Otherwise it is `null`.
+
 ### Production stack (chat + retrieval)
 
 Production uses **Google AI Studio for chat and embeddings**. OpenCode and Ollama remain optional alternatives when configured.

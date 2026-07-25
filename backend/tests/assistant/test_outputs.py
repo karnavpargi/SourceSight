@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from app.assistant.outputs import Citation, GroundedAnswer, SourcePassage
+from app.assistant.outputs import Citation, DraftCitation, GroundedAnswer, GroundedDraft, SourcePassage
 
 CHUNK_ID = UUID("11111111-1111-1111-1111-111111111111")
 DOCUMENT_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -79,3 +79,10 @@ def test_grounded_answer_allows_empty_citations() -> None:
 
     assert answer.citations == []
     assert answer.cited_passages == []
+
+
+def test_grounded_draft_has_no_cited_passages_field() -> None:
+    fields = GroundedDraft.model_fields
+    assert "cited_passages" not in fields
+    assert "chunk_id" not in DraftCitation.model_fields
+    assert "evidence_alias" in DraftCitation.model_fields

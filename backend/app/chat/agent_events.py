@@ -18,6 +18,49 @@ from pydantic_ai.tools import RunContext
 
 from app.chat.turn_activity import TurnActivityEmitter
 
+__all__ = [
+    "ROUTED_STAGE_ROUTE",
+    "ROUTED_STAGE_RETRIEVE",
+    "ROUTED_STAGE_EXTRACT",
+    "ROUTED_STAGE_SYNTHESIZE",
+    "ROUTED_STAGE_FALLBACK",
+    "ROUTED_STAGE_LABELS",
+    "start_routed_stage",
+    "tool_detail",
+    "bridge_agent_stream_events",
+    "agent_event_stream_handler",
+]
+
+
+# Routed-turn stage kinds/labels used by the orchestrator. Keep these centralized
+# so UI activity stays consistent across entrypoints.
+ROUTED_STAGE_ROUTE = "route"
+ROUTED_STAGE_RETRIEVE = "retrieve"
+ROUTED_STAGE_EXTRACT = "extract"
+ROUTED_STAGE_SYNTHESIZE = "synthesize"
+ROUTED_STAGE_FALLBACK = "fallback"
+
+ROUTED_STAGE_LABELS: dict[str, str] = {
+    ROUTED_STAGE_ROUTE: "Planning retrieval...",
+    ROUTED_STAGE_RETRIEVE: "Searching indexed filings...",
+    ROUTED_STAGE_EXTRACT: "Extracting facts...",
+    ROUTED_STAGE_SYNTHESIZE: "Composing answer...",
+    ROUTED_STAGE_FALLBACK: "Composing answer...",
+}
+
+
+def start_routed_stage(
+    emitter: TurnActivityEmitter,
+    *,
+    stage: str,
+    detail: str | None = None,
+    bind_active: bool = False,
+) -> str:
+    step_id = emitter.start(stage, ROUTED_STAGE_LABELS.get(stage, stage), detail=detail)
+    if bind_active:
+        emitter.bind_active_tool(step_id)
+    return step_id
+
 _RETRIEVAL_TOOLS = frozenset(
     {"search_filings", "read_chunk", "read_surrounding_chunks"},
 )

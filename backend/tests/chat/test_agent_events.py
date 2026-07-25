@@ -8,7 +8,12 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-from app.chat.agent_events import bridge_agent_stream_events
+from app.chat.agent_events import (
+    ROUTED_STAGE_RETRIEVE,
+    ROUTED_STAGE_LABELS,
+    bridge_agent_stream_events,
+    start_routed_stage,
+)
 from app.chat.turn_activity import TurnActivityEmitter
 
 
@@ -36,3 +41,17 @@ async def test_bridge_emits_tool_lifecycle() -> None:
 
     assert any(update.kind == "read_chunk" and update.phase == "start" for update in updates)
     assert any(update.kind == "read_chunk" and update.phase == "end" for update in updates)
+
+
+def test_start_routed_stage_uses_human_readable_labels() -> None:
+    emitter = TurnActivityEmitter()
+    step_id = start_routed_stage(emitter, stage=ROUTED_STAGE_RETRIEVE, bind_active=True)
+    updates = emitter.drain()
+    assert updates[0].phase == "start"
+    assert updates[0].kind == ROUTED_STAGE_RETRIEVE
+    assert updates[0].label == ROUTED_STAGE_LABELS[ROUTED_STAGE_RETRIEVE]
+    # Ensure the stage can receive update_active() calls when bound.
+    emitter.update_active("Searching indexed filings...", detail="NVDA")
+    updates = emitter.drain()
+    assert updates and updates[-1].phase == "update"
+    emitter.end(step_id, kind=ROUTED_STAGE_RETRIEVE, label="Evidence retrieved")

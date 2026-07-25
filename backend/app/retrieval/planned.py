@@ -17,8 +17,9 @@ class PlannedRetrieval:
 
 
 class DocumentRetriever(Protocol):
-    def search_filings_batch(self, queries: list[str], *, limit_per_query: int = 5) -> list[SourcePassage]:
-        ...
+    def search_filings_batch(
+        self, queries: list[str], *, limit_per_query: int = 5
+    ) -> list[SourcePassage]: ...
 
 
 def _dedupe_and_cap(passages: list[SourcePassage], cap: int) -> list[SourcePassage]:
@@ -83,4 +84,3 @@ def retrieve_for_plan(
         missing_scope=tuple([*validated.missing_scope, *missing]),
         expanded=expanded,
     )
-

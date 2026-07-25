@@ -57,7 +57,7 @@ class ValidatedExtraction:
     validation_errors: tuple[str, ...]
 
 
-_NUM_RE = re.compile(r'[\(\)\-\$€£]?\d[\d,\.]*[\)]?')
+_NUM_RE = re.compile(r"[\(\)\-\$€£]?\d[\d,\.]*[\)]?")
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _YEAR_REFERENCE_RE = re.compile(
@@ -80,16 +80,16 @@ def _numeric_tokens(text: str) -> set[Decimal]:
     for m in _NUM_RE.finditer(text or ""):
         raw = m.group(0)
         # remove currency symbols
-        s = re.sub(r'[\$€£]', '', raw)
+        s = re.sub(r"[\$€£]", "", raw)
         s = s.strip()
         negative = False
-        if s.startswith('(') and s.endswith(')'):
+        if s.startswith("(") and s.endswith(")"):
             negative = True
             s = s[1:-1]
-        if s.startswith('-'):
+        if s.startswith("-"):
             negative = True
             s = s[1:]
-        s = s.replace(',', '')
+        s = s.replace(",", "")
         if s == "":
             continue
         try:
@@ -116,8 +116,7 @@ def validate_draft_numeric_claims(
 ) -> None:
     """Reject cited numeric claims whose values are absent from their evidence."""
     aliases_by_index = {
-        citation.citation_index: citation.evidence_alias
-        for citation in draft.citations
+        citation.citation_index: citation.evidence_alias for citation in draft.citations
     }
     for paragraph in draft.answer.splitlines():
         for segment in _SENTENCE_SPLIT_RE.split(paragraph.strip()):
@@ -141,7 +140,9 @@ def validate_draft_numeric_claims(
                     raise ValueError("unsupported numeric claim in cited draft")
 
 
-def validate_extraction(extraction: FactExtraction, evidence: EvidenceRegistry, route: str) -> ValidatedExtraction:
+def validate_extraction(
+    extraction: FactExtraction, evidence: EvidenceRegistry, route: str
+) -> ValidatedExtraction:
     errors: list[str] = []
     validated_facts: list[ExtractedFact] = []
 
@@ -190,4 +191,3 @@ def validate_extraction(extraction: FactExtraction, evidence: EvidenceRegistry, 
         draft=extraction.draft,
         validation_errors=tuple(errors),
     )
-

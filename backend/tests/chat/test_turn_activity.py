@@ -96,8 +96,7 @@ def test_turn_activity_emitter_serializes_worker_thread_state() -> None:
 
     def emit(worker: int) -> None:
         step_id = emitter.start("search_filings", f"Searching {worker}")
-        emitter.bind_active_tool(step_id)
-        emitter.update_active(f"Searching {worker}...")
+        emitter.update(step_id, f"Searching {worker}...")
         emitter.end(step_id)
 
     with ThreadPoolExecutor(max_workers=8) as executor:

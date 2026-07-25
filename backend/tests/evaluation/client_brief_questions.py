@@ -85,4 +85,3 @@ CLIENT_BRIEF_CASES: tuple[ClientBriefCase, ...] = (
     ClientBriefCase(GEOGRAPHIC_EXPOSURE, "extractive"),
     ClientBriefCase(GENAI_MARGIN_PROOF, "boundary"),
 )
-

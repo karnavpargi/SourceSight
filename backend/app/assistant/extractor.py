@@ -76,4 +76,3 @@ async def run_fact_extractor(
         **token_usage_fields(run),
     )
     return run.output
-

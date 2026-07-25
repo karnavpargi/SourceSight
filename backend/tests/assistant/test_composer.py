@@ -8,7 +8,11 @@ from pydantic_ai import ModelMessage, ModelResponse, models
 from pydantic_ai.messages import TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from app.assistant.composer import run_citation_correction, run_direct_fallback, run_synthesis
+from app.assistant.composer import (
+    run_citation_correction,
+    run_direct_fallback,
+    run_synthesis,
+)
 from app.assistant.evidence import EvidenceRegistry
 from app.assistant.facts import FactExtraction, validate_extraction
 from app.chat.generation import ChatGenerationConfig
@@ -38,7 +42,9 @@ def _sample_passage() -> SourcePassage:
 
 
 @pytest.mark.anyio
-async def test_synthesis_has_no_tools_and_receives_validated_facts_and_compact_evidence_only() -> None:
+async def test_synthesis_has_no_tools_and_receives_validated_facts_and_compact_evidence_only() -> (
+    None
+):
     evidence = EvidenceRegistry()
     evidence.register([_sample_passage()])
     plan = QueryPlan(
@@ -152,17 +158,23 @@ async def test_direct_fallback_has_no_tools_and_uses_evidence_only() -> None:
 
 
 @pytest.mark.anyio
-async def test_citation_correction_has_no_tools_and_uses_correction_token_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_citation_correction_has_no_tools_and_uses_correction_token_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     evidence = EvidenceRegistry()
     evidence.register([_sample_passage()])
 
     captured = SimpleNamespace(max_tokens=None)
 
-    def fake_build_model_settings(config: ChatGenerationConfig, *, max_tokens: int) -> dict[str, object]:
+    def fake_build_model_settings(
+        config: ChatGenerationConfig, *, max_tokens: int
+    ) -> dict[str, object]:
         captured.max_tokens = max_tokens
         return {"temperature": config.temperature, "max_tokens": max_tokens}
 
-    monkeypatch.setattr("app.assistant.composer.build_model_settings", fake_build_model_settings)
+    monkeypatch.setattr(
+        "app.assistant.composer.build_model_settings", fake_build_model_settings
+    )
 
     async def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         assert info.function_tools == []
@@ -202,4 +214,3 @@ async def test_citation_correction_has_no_tools_and_uses_correction_token_cap(mo
     )
 
     assert captured.max_tokens == 123
-

@@ -82,4 +82,3 @@ async def run_query_router(
         **token_usage_fields(run),
     )
     return run.output
-

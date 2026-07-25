@@ -36,7 +36,9 @@ def _sample_passage() -> SourcePassage:
 
 
 @pytest.mark.anyio
-async def test_extractor_prompt_includes_aliases_not_chunk_ids_and_extractive_outputs_draft() -> None:
+async def test_extractor_prompt_includes_aliases_not_chunk_ids_and_extractive_outputs_draft() -> (
+    None
+):
     evidence = EvidenceRegistry()
     evidence.register([_sample_passage()])
     plan = QueryPlan(
@@ -157,4 +159,3 @@ async def test_extractor_synthesis_route_omits_draft() -> None:
     )
 
     assert extraction.draft is None
-

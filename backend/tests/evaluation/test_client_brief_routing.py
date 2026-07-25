@@ -147,7 +147,9 @@ def _function_model() -> FunctionModel:
         if question not in tickers_for_question:
             raise AssertionError(f"unexpected question: {question!r}")
 
-        expected_route = next(c.expected_route for c in CLIENT_BRIEF_CASES if c.question == question)
+        expected_route = next(
+            c.expected_route for c in CLIENT_BRIEF_CASES if c.question == question
+        )
         tickers = tickers_for_question[question]
 
         info_text = repr(info).lower()
@@ -219,7 +221,9 @@ def _function_model() -> FunctionModel:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("case", CLIENT_BRIEF_CASES)
-async def test_client_brief_offline_routing_regression(case, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_client_brief_offline_routing_regression(
+    case, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Offline regression for all ten client-brief questions (no DB, no network)."""
     coverage = _coverage()
     retriever = StubRetriever()
@@ -229,8 +233,12 @@ async def test_client_brief_offline_routing_regression(case, monkeypatch: pytest
     def fake_build_model(_provider: str, _model: str):
         return model
 
-    monkeypatch.setattr("app.chat.orchestrator.resolve_router_model", lambda: ROUTER_MODEL)
-    monkeypatch.setattr("app.chat.orchestrator.build_document_agent_model", fake_build_model)
+    monkeypatch.setattr(
+        "app.chat.orchestrator.resolve_router_model", lambda: ROUTER_MODEL
+    )
+    monkeypatch.setattr(
+        "app.chat.orchestrator.build_document_agent_model", fake_build_model
+    )
 
     answer, retrieved_passages, evidence, usage = await _run_routed_turn(
         case.question,
@@ -377,8 +385,12 @@ async def test_unknown_evidence_alias_refuses_without_crash(
     def fake_build_model(_provider: str, _model: str):
         return model
 
-    monkeypatch.setattr("app.chat.orchestrator.resolve_router_model", lambda: ROUTER_MODEL)
-    monkeypatch.setattr("app.chat.orchestrator.build_document_agent_model", fake_build_model)
+    monkeypatch.setattr(
+        "app.chat.orchestrator.resolve_router_model", lambda: ROUTER_MODEL
+    )
+    monkeypatch.setattr(
+        "app.chat.orchestrator.build_document_agent_model", fake_build_model
+    )
 
     answer, retrieved_passages, _evidence, usage = await _run_routed_turn(
         question,
@@ -397,4 +409,3 @@ async def test_unknown_evidence_alias_refuses_without_crash(
     assert answer.answer == REFUSAL_MESSAGE
     assert answer.citations == []
     grounding_validator.validate(answer, retrieved_passages)
-

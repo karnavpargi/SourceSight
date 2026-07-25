@@ -25,4 +25,3 @@ def test_load_corpus_coverage_groups_distinct_rows() -> None:
     coverage = load_corpus_coverage(session)
     assert coverage.ticker_years["AMZN"] == frozenset({2023, 2024})
     assert coverage.tickers == frozenset({"AMZN", "MSFT"})
-

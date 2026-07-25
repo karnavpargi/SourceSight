@@ -5,7 +5,11 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.output import PromptedOutput
 
-from app.assistant.agent import build_document_agent_model, infer_usage_model_name, token_usage_fields
+from app.assistant.agent import (
+    build_document_agent_model,
+    infer_usage_model_name,
+    token_usage_fields,
+)
 from app.assistant.evidence import CompactEvidence, EvidenceRegistry
 from app.assistant.facts import ExtractedFact, ValidatedExtraction
 from app.assistant.outputs import GroundedDraft
@@ -187,4 +191,3 @@ async def run_citation_correction(
         **token_usage_fields(run),
     )
     return run.output
-

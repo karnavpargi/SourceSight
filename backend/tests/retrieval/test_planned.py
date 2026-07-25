@@ -100,4 +100,3 @@ def test_retrieve_for_plan_enforces_unique_passage_cap() -> None:
     )
     # Each query returns up to budget.max_hits_per_search (5) unique passages here
     assert len(result.passages) == 5
-

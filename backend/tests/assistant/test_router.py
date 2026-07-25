@@ -87,4 +87,3 @@ async def test_router_has_no_tools_and_returns_structured_plan() -> None:
     )
     assert isinstance(plan, QueryPlan)
     assert plan.route == "extractive"
-

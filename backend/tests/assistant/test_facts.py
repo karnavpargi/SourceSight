@@ -195,4 +195,3 @@ def test_synthesis_route_rejects_extractive_draft() -> None:
             _registry("Demand increased."),
             route="synthesis",
         )
-

@@ -49,9 +49,7 @@ def validate_query_plan(
     coverage: "CorpusCoverage",
 ) -> ValidatedQueryPlan:
     missing = [
-        f"ticker:{ticker}"
-        for ticker in plan.tickers
-        if ticker not in coverage.tickers
+        f"ticker:{ticker}" for ticker in plan.tickers if ticker not in coverage.tickers
     ]
     missing.extend(
         f"year:{year}"
@@ -59,4 +57,3 @@ def validate_query_plan(
         if year not in coverage.fiscal_years
     )
     return ValidatedQueryPlan(plan=plan, missing_scope=tuple(missing))
-

@@ -16,9 +16,7 @@ class CorpusCoverage(BaseModel):
 
     @property
     def fiscal_years(self) -> frozenset[int]:
-        return frozenset(
-            year for years in self.ticker_years.values() for year in years
-        )
+        return frozenset(year for years in self.ticker_years.values() for year in years)
 
     def prompt_summary(self) -> str:
         return "; ".join(
@@ -39,4 +37,3 @@ def load_corpus_coverage(session: Session) -> CorpusCoverage:
     return CorpusCoverage(
         ticker_years={ticker: frozenset(years) for ticker, years in grouped.items()}
     )
-

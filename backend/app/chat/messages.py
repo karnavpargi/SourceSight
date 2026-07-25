@@ -62,8 +62,25 @@ class TurnActivityPart(BaseModel):
     id: str | None = None
 
 
+class UsageData(BaseModel):
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+
+
+class UsagePart(BaseModel):
+    type: Literal["data-usage"] = "data-usage"
+    data: UsageData
+    id: str | None = None
+
+
 ChatUIPart = Annotated[
-    TextPart | CitationPart | SourcePassagePart | ProgressPart | TurnActivityPart,
+    TextPart
+    | CitationPart
+    | SourcePassagePart
+    | ProgressPart
+    | TurnActivityPart
+    | UsagePart,
     Field(discriminator="type"),
 ]
 
@@ -94,7 +111,24 @@ def parse_ui_messages(data: list[dict]) -> list[ChatUIMessage]:
 
 def ui_message_to_wire(message: ChatUIMessage) -> dict:
     """Serialize an internal UI message back to AI SDK wire JSON."""
-    return message.model_dump(mode="json", exclude_none=True)
+    wire = message.model_dump(mode="json", exclude_none=True)
+    parts = wire.get("parts")
+    if isinstance(parts, list):
+        for index, part in enumerate(message.parts):
+            if isinstance(part, UsagePart):
+                parts[index] = usage_part_wire_payload(part)
+    return wire
+
+
+def usage_part_wire_payload(part: UsagePart) -> dict:
+    return {
+        "type": "data-usage",
+        "data": {
+            "input_tokens": part.data.input_tokens,
+            "output_tokens": part.data.output_tokens,
+            "estimated_cost_usd": part.data.estimated_cost_usd,
+        },
+    }
 
 
 def message_text(message: ChatUIMessage) -> str:
@@ -107,6 +141,7 @@ def grounded_answer_to_ui_message(
     *,
     message_id: str,
     activity_steps: list[TurnActivityData] | None = None,
+    usage: UsageData | None = None,
 ) -> ChatUIMessage:
     """Build a persisted/streamed assistant UI message from a grounded answer."""
     parts: list[ChatUIPart] = []
@@ -119,6 +154,8 @@ def grounded_answer_to_ui_message(
     parts.append(TextPart(text=answer.answer))
     parts.extend(_citation_to_part(citation) for citation in answer.citations)
     parts.extend(SourcePassagePart(data=passage) for passage in answer.cited_passages)
+    if usage is not None:
+        parts.append(UsagePart(data=usage))
     return ChatUIMessage(id=message_id, role="assistant", parts=parts)
 
 
@@ -163,6 +200,8 @@ def _parse_part(data: dict) -> ChatUIPart:
         return ProgressPart.model_validate(data)
     if part_type == "data-activity":
         return TurnActivityPart.model_validate(data)
+    if part_type == "data-usage":
+        return UsagePart.model_validate(data)
     raise ValueError(f"Unsupported message part type: {part_type!r}")
 
 

@@ -15,7 +15,10 @@ from app.chat.messages import (
     ProgressData,
     TextPart,
     TurnActivityData,
+    UsageData,
+    UsagePart,
     grounded_answer_to_ui_message,
+    usage_part_wire_payload,
 )
 
 UI_MESSAGE_STREAM_VERSION = "v1"
@@ -79,6 +82,10 @@ async def stream_ui_message(message: ChatUIMessage) -> AsyncIterator[str]:
                 yield event
             continue
 
+        if isinstance(part, UsagePart):
+            yield format_ui_message_sse_event(usage_part_wire_payload(part))
+            continue
+
         yield format_ui_message_sse_event(part.model_dump(mode="json", exclude_none=True))
 
     yield format_ui_message_sse_event({"type": "finish"})
@@ -90,10 +97,15 @@ async def stream_grounded_answer_events(
     *,
     message_id: str | None = None,
     include_start: bool = True,
+    usage: UsageData | None = None,
 ) -> AsyncIterator[str]:
     """Stream a grounded answer as incremental SSE events."""
     resolved_message_id = message_id or f"msg_{uuid.uuid4().hex}"
-    ui_message = grounded_answer_to_ui_message(answer, message_id=resolved_message_id)
+    ui_message = grounded_answer_to_ui_message(
+        answer,
+        message_id=resolved_message_id,
+        usage=usage,
+    )
 
     if include_start:
         yield format_ui_message_sse_event({"type": "start", "messageId": resolved_message_id})
@@ -103,6 +115,10 @@ async def stream_grounded_answer_events(
         if isinstance(part, TextPart):
             async for event in _stream_text_part(part.text):
                 yield event
+            continue
+
+        if isinstance(part, UsagePart):
+            yield format_ui_message_sse_event(usage_part_wire_payload(part))
             continue
 
         yield format_ui_message_sse_event(part.model_dump(mode="json", exclude_none=True))

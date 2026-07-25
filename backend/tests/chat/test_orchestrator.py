@@ -26,6 +26,7 @@ from app.chat.turn_budget import DEFAULT_TURN_BUDGET
 from app.grounding.validator import GroundingError, grounding_validator
 from app.database.chats import ChatMessageRecord
 from app.chat.usage import TurnUsage
+from app.config import settings
 from app.retrieval.types import RetrievalResult, SourcePassage
 from app.retrieval.coverage import CorpusCoverage
 
@@ -189,8 +190,50 @@ async def _fake_run_agent(
     return _grounded_answer(), [_passage()], evidence, usage
 
 
+async def _fake_run_agent_with_usage(
+    user_text: str,
+    *,
+    user_id: UUID,
+    thread_id: UUID,
+    chat_model: ResolvedChatModel,
+    generation: ChatGenerationConfig,
+    grounding_validator,  # unused in stub
+    activity=None,
+    retriever=None,
+) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
+    if activity is not None:
+        activity.start_thinking(f"Thinking with {chat_model.model}...")
+    if retriever is not None:
+        retriever.search_filings(user_text)
+    if activity is not None:
+        activity.end_thinking()
+    evidence = EvidenceRegistry()
+    usage = TurnUsage()
+    usage.add_model_usage(
+        stage="router",
+        model="gemini-flash-lite-latest",
+        input_tokens=596,
+        output_tokens=214,
+    )
+    usage.add_model_usage(
+        stage="synthesis",
+        model="gemini-3.5-flash-lite",
+        input_tokens=4902,
+        output_tokens=920,
+    )
+    return _grounded_answer(), [_passage()], evidence, usage
+
+
 @pytest.mark.anyio
-async def test_run_chat_turn_emits_progress_before_answer() -> None:
+async def test_run_chat_turn_emits_progress_before_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        settings,
+        "chat_model_prices",
+        {
+            "gemini-flash-lite-latest": (0.30, 2.50),
+            "gemini-3.5-flash-lite": (0.30, 2.50),
+        },
+    )
     retriever = StubRetriever(passages=[_passage()])
     validator = RecordingValidator(should_fail=False)
     client = object()
@@ -207,7 +250,10 @@ async def test_run_chat_turn_emits_progress_before_answer() -> None:
     ), patch(
         "app.chat.orchestrator.chat_store.title_thread_from_first_message",
         new=AsyncMock(),
-    ), patch("app.chat.orchestrator._run_agent", side_effect=_fake_run_agent):
+    ), patch(
+        "app.chat.orchestrator._run_agent",
+        side_effect=_fake_run_agent_with_usage,
+    ):
         response = await run_chat_turn(
             client,
             user_id=USER_ID,
@@ -237,6 +283,62 @@ async def test_run_chat_turn_emits_progress_before_answer() -> None:
     assert len(citations) == 1
     assert citations[0].chunk_id == CHUNK_ID
     assert citations[0].citation_index == 1
+
+    persisted_message = update_message_data.await_args.kwargs["message_data"]
+    usage_parts = [
+        part for part in persisted_message["parts"] if part["type"] == "data-usage"
+    ]
+    assert len(usage_parts) == 1
+    assert usage_parts[0]["data"]["input_tokens"] == 5498
+    assert usage_parts[0]["data"]["output_tokens"] == 1134
+    assert usage_parts[0]["data"]["estimated_cost_usd"] == pytest.approx(0.0044844)
+    assert body.count('"type":"data-usage"') == 1
+
+
+@pytest.mark.anyio
+async def test_run_chat_turn_persists_usage_without_cost_when_prices_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "chat_model_prices", {})
+    retriever = StubRetriever(passages=[_passage()])
+    validator = RecordingValidator(should_fail=False)
+    client = object()
+
+    append = AsyncMock(return_value=_appended_message())
+    attach = AsyncMock(return_value=[])
+    update_message_data = AsyncMock(return_value=_appended_message())
+
+    with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
+        "app.chat.orchestrator.chat_store.attach_citations", new=attach
+    ), patch(
+        "app.chat.orchestrator.chat_store.update_message_data",
+        new=update_message_data,
+    ), patch(
+        "app.chat.orchestrator.chat_store.title_thread_from_first_message",
+        new=AsyncMock(),
+    ), patch(
+        "app.chat.orchestrator._run_agent",
+        side_effect=_fake_run_agent_with_usage,
+    ):
+        response = await run_chat_turn(
+            client,
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            user_text="How did AWS operating income change?",
+            user_message_data=None,
+            retriever=retriever,
+            grounding_validator=validator,
+            chat_model=TEST_CHAT_MODEL,
+            generation=TEST_GENERATION,
+        )
+        await _collect(response)
+
+    persisted_message = update_message_data.await_args.kwargs["message_data"]
+    usage_parts = [
+        part for part in persisted_message["parts"] if part["type"] == "data-usage"
+    ]
+    assert len(usage_parts) == 1
+    assert usage_parts[0]["data"]["estimated_cost_usd"] is None
 
 
 @pytest.mark.anyio

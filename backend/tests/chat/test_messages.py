@@ -2,6 +2,7 @@ from datetime import date
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from app.assistant.outputs import Citation, GroundedAnswer
 from app.chat.messages import (
@@ -10,6 +11,7 @@ from app.chat.messages import (
     CitationPart,
     SourcePassagePart,
     TextPart,
+    UsageData,
     extract_latest_user_text,
     grounded_answer_to_ui_message,
     message_text,
@@ -141,3 +143,37 @@ def test_parse_ui_message_rejects_unknown_part_type() -> None:
                 "parts": [{"type": "image", "url": "https://example.com/x.png"}],
             }
         )
+
+
+def test_usage_part_round_trips_through_ui_message() -> None:
+    raw = {
+        "id": "assistant-1",
+        "role": "assistant",
+        "parts": [
+            {
+                "type": "data-usage",
+                "data": {
+                    "input_tokens": 9729,
+                    "output_tokens": 2372,
+                    "estimated_cost_usd": 0.008849,
+                },
+            }
+        ],
+    }
+
+    parsed = parse_ui_message(raw)
+
+    assert ui_message_to_wire(parsed) == raw
+
+
+@pytest.mark.parametrize("field", ["input_tokens", "output_tokens"])
+def test_usage_data_rejects_negative_tokens(field: str) -> None:
+    payload = {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "estimated_cost_usd": None,
+    }
+    payload[field] = -1
+
+    with pytest.raises(ValidationError):
+        UsageData.model_validate(payload)

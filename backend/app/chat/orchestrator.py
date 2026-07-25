@@ -50,7 +50,7 @@ from app.chat.agent_events import (
 )
 from app.chat.generation import ChatGenerationConfig
 from app.chat.models_catalog import ResolvedChatModel, resolve_router_model
-from app.chat.messages import TurnActivityData
+from app.chat.messages import TurnActivityData, UsageData
 from app.chat.persistence import assistant_answer_to_wire
 from app.chat.routing import fallback_query_plan, validate_query_plan
 from app.chat.turn_activity import TurnActivityEmitter
@@ -542,12 +542,19 @@ async def _stream_chat_turn(
         yield event
     await asyncio.sleep(0)
 
+    usage_data = UsageData(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        estimated_cost_usd=usage.estimated_cost_usd(settings.chat_model_prices),
+    )
+
     await _persist_assistant_answer(
         client,
         user_id=user_id,
         thread_id=thread_id,
         answer=answer,
         activity_log=activity_log,
+        usage=usage_data,
     )
     activity.end(save_id, kind="save", label="Answer saved")
     for event in emit_activity_updates():
@@ -558,6 +565,7 @@ async def _stream_chat_turn(
         answer,
         message_id=message_id,
         include_start=False,
+        usage=usage_data,
     ):
         yield event
 
@@ -768,6 +776,7 @@ async def _persist_assistant_answer(
     thread_id: UUID,
     answer: GroundedAnswer,
     activity_log: list[TurnActivityData] | None = None,
+    usage: UsageData | None = None,
 ) -> None:
     message = await chat_store.append_message(
         client,
@@ -798,5 +807,6 @@ async def _persist_assistant_answer(
             answer,
             message_id=str(message.id),
             activity_steps=activity_steps,
+            usage=usage,
         ),
     )

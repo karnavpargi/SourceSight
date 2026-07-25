@@ -5,7 +5,7 @@ from unittest.mock import patch
 from uuid import UUID
 
 from app.assistant.outputs import Citation, GroundedAnswer
-from app.chat.messages import TurnActivityData
+from app.chat.messages import TurnActivityData, UsageData
 from app.chat.persistence import assistant_answer_to_wire, enrich_assistant_messages
 from app.database.chats import ChatMessageRecord, MessageCitationRecord
 from app.retrieval.types import SourcePassage
@@ -67,24 +67,39 @@ def test_assistant_answer_to_wire_includes_activity_steps() -> None:
 
 
 def test_assistant_answer_to_wire_includes_citations_and_passages() -> None:
+    answer = GroundedAnswer(
+        answer="Apple net income rose [1].",
+        citations=[
+            Citation(
+                citation_index=1,
+                chunk_id=CHUNK_ID,
+                excerpt="Net income increased.",
+            )
+        ],
+        cited_passages=[_passage()],
+    )
+    usage = UsageData(
+        input_tokens=9729,
+        output_tokens=2372,
+        estimated_cost_usd=0.008849,
+    )
     wire = assistant_answer_to_wire(
-        GroundedAnswer(
-            answer="Apple net income rose [1].",
-            citations=[
-                Citation(
-                    citation_index=1,
-                    chunk_id=CHUNK_ID,
-                    excerpt="Net income increased.",
-                )
-            ],
-            cited_passages=[_passage()],
-        ),
+        answer,
         message_id=str(MESSAGE_ID),
+        usage=usage,
     )
 
     part_types = [part["type"] for part in wire["parts"]]
-    assert part_types == ["text", "data-citation", "data-source-passage"]
+    assert part_types == ["text", "data-citation", "data-source-passage", "data-usage"]
     assert wire["id"] == str(MESSAGE_ID)
+    assert wire["parts"][-1] == {
+        "type": "data-usage",
+        "data": {
+            "input_tokens": 9729,
+            "output_tokens": 2372,
+            "estimated_cost_usd": 0.008849,
+        },
+    }
 
 
 def test_enrich_assistant_messages_rebuilds_message_data_from_citations() -> None:

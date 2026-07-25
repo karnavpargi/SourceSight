@@ -3,7 +3,10 @@ import json
 from datetime import date
 from uuid import UUID
 
+import pytest
+
 from app.assistant.outputs import Citation, GroundedAnswer
+from app.chat.messages import UsageData
 from app.chat.streaming import (
     STUB_ASSISTANT_REPLY,
     format_ui_message_sse_event,
@@ -155,3 +158,38 @@ def test_stream_grounded_answer_emits_text_and_data_parts() -> None:
 
     text = "".join(event["delta"] for event in events if event["type"] == "text-delta")
     assert text == "AWS operating income rose [1]."
+
+
+@pytest.mark.anyio
+async def test_grounded_stream_emits_one_usage_part() -> None:
+    usage = UsageData(
+        input_tokens=9729,
+        output_tokens=2372,
+        estimated_cost_usd=0.008849,
+    )
+
+    events = [
+        event
+        async for event in stream_grounded_answer_events(
+            _grounded_answer(),
+            message_id="assistant-1",
+            usage=usage,
+        )
+    ]
+    payloads = [
+        json.loads(event.removeprefix("data: ").strip())
+        for event in events
+        if event.startswith("data: {")
+    ]
+    usage_parts = [payload for payload in payloads if payload["type"] == "data-usage"]
+
+    assert usage_parts == [
+        {
+            "type": "data-usage",
+            "data": {
+                "input_tokens": 9729,
+                "output_tokens": 2372,
+                "estimated_cost_usd": 0.008849,
+            },
+        }
+    ]

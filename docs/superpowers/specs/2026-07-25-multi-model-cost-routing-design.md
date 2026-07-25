@@ -120,13 +120,15 @@ The router/extractor model receives compact evidence and emits typed facts:
 - evidence alias; and
 - coverage status: `supported`, `missing`, or `conflicting`.
 
-The extractor must not estimate missing values. Deterministic validation confirms that each alias exists and that normalized numerical values appear in the cited source content. Unsupported facts are discarded before drafting.
+For an `extractive` route, the same structured response also contains a `GroundedDraft`; synthesis and boundary routes omit it. This avoids a third cheap-model call merely to format an extractive answer.
+
+The extractor must not estimate missing values. Deterministic validation confirms that each alias exists and that normalized numerical values appear in the cited source content. Unsupported facts are discarded before the optional draft is finalized or facts are passed to synthesis.
 
 ### Decision gate
 
 The backend decides the next step without another classifier call:
 
-- `extractive` + sufficient coverage: use the router/extractor model to produce `GroundedDraft`;
+- `extractive` + sufficient coverage: use the `GroundedDraft` included in the validated extraction response;
 - `synthesis`: call the selected synthesis model with the question, validated facts, missing-coverage notes, and compact supporting excerpts;
 - `boundary`: call the selected synthesis model only when needed to explain the evidence boundary; otherwise return a grounded limitation;
 - missing coverage after extraction: qualify the answer or refuse; retrieval expansion has already been decided from evidence metadata before this stage.
@@ -149,7 +151,7 @@ The existing finalizer remains authoritative:
 4. Compare retrieved ticker/year metadata with required coverage and, if needed, execute reserve queries once within the same caps.
 5. Register compact evidence aliases and run cheap fact extraction.
 6. Validate aliases, numerical values, and coverage.
-7. Use the cheap model for a complete extractive answer, or escalate compact facts and excerpts to the synthesis model.
+7. Use the extractive draft from the cheap model, or escalate compact facts and excerpts to the synthesis model.
 8. Finalize aliases into trusted citations and validate grounding.
 9. If necessary, run one no-retrieval citation correction.
 10. Persist and stream the unchanged frontend wire format.
@@ -170,8 +172,8 @@ Per question:
 Stage output caps are:
 
 - router: 300 tokens;
-- standard extraction: 1,200 tokens;
-- broad extraction: 2,000 tokens;
+- standard extraction, including an optional draft: 2,800 tokens;
+- broad extraction, including an optional draft: 3,500 tokens;
 - final draft or synthesis: 2,800 tokens; and
 - citation correction: 1,200 tokens.
 

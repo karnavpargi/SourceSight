@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import date
-from uuid import UUID
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import pytest
 from pydantic_ai import ModelMessage, ModelResponse, models
@@ -45,7 +45,7 @@ def _coverage() -> CorpusCoverage:
 def _passage(chunk_id: UUID, *, ticker: str) -> SourcePassage:
     return SourcePassage(
         chunk_id=chunk_id,
-        document_id=UUID("22222222-2222-2222-2222-222222222222"),
+        document_id=uuid5(NAMESPACE_DNS, f"doc:{ticker}"),
         chunk_index=0,
         content="Stub evidence.",
         section="Item 7. MD&A",
@@ -60,13 +60,21 @@ def _passage(chunk_id: UUID, *, ticker: str) -> SourcePassage:
     )
 
 
+def _make_passages(*, ticker: str, count: int) -> list[SourcePassage]:
+    # Deterministic, many-unique passages so retrieval caps are exercised.
+    return [
+        _passage(uuid5(NAMESPACE_DNS, f"chunk:{ticker}:{i}"), ticker=ticker)
+        for i in range(count)
+    ]
+
+
 def _default_passages() -> list[SourcePassage]:
     return [
-        _passage(UUID("11111111-1111-1111-1111-111111111111"), ticker="AAPL"),
-        _passage(UUID("33333333-3333-3333-3333-333333333333"), ticker="AMZN"),
-        _passage(UUID("44444444-4444-4444-4444-444444444444"), ticker="GOOGL"),
-        _passage(UUID("55555555-5555-5555-5555-555555555555"), ticker="MSFT"),
-        _passage(UUID("66666666-6666-6666-6666-666666666666"), ticker="NVDA"),
+        *_make_passages(ticker="AAPL", count=25),
+        *_make_passages(ticker="AMZN", count=25),
+        *_make_passages(ticker="GOOGL", count=25),
+        *_make_passages(ticker="MSFT", count=25),
+        *_make_passages(ticker="NVDA", count=25),
     ]
 
 
@@ -74,6 +82,8 @@ def _default_passages() -> list[SourcePassage]:
 class StubRetriever:
     passages: list[SourcePassage] = field(default_factory=_default_passages)
     queries: list[list[str]] = field(default_factory=list)
+    limits: list[int] = field(default_factory=list)
+    calls: int = 0
 
     def search_filings_batch(
         self,
@@ -81,9 +91,14 @@ class StubRetriever:
         *,
         limit_per_query: int = 5,
     ) -> list[SourcePassage]:
+        assert limit_per_query == 5
+        self.limits.append(limit_per_query)
         self.queries.append(list(queries))
         limit = limit_per_query * max(len(queries), 1)
-        return self.passages[:limit]
+        start = self.calls * limit
+        self.calls += 1
+        end = start + limit
+        return self.passages[start:end]
 
 
 def _tickers_for_question() -> dict[str, list[str]]:
@@ -217,7 +232,7 @@ async def test_client_brief_offline_routing_regression(case, monkeypatch: pytest
     monkeypatch.setattr("app.chat.orchestrator.resolve_router_model", lambda: ROUTER_MODEL)
     monkeypatch.setattr("app.chat.orchestrator.build_document_agent_model", fake_build_model)
 
-    answer, retrieved_passages, _evidence, usage = await _run_routed_turn(
+    answer, retrieved_passages, evidence, usage = await _run_routed_turn(
         case.question,
         user_id=USER_ID,
         thread_id=THREAD_ID,
@@ -260,13 +275,24 @@ async def test_client_brief_offline_routing_regression(case, monkeypatch: pytest
 
     # Retrieval stays batched and bounded.
     assert len(retriever.queries) == 2
+    assert retriever.limits == [5, 5]
     primary, reserve = retriever.queries
     if usage.budget_profile == "standard":
         assert len(primary) <= 3
         assert len(reserve) <= 1
+        cap = 8
     else:
         assert len(primary) <= 5
         assert len(reserve) <= 2
+        cap = 15
+
+    # Cap must be enforced on the passages the turn keeps (not a vacuous single-passage stub).
+    raw_unique = len({p.chunk_id for p in retrieved_passages})
+    assert raw_unique > cap
+    kept_unique = len({p.chunk_id for p in evidence.all_passages()})
+    assert kept_unique <= cap
+    assert usage.passages <= cap
+    assert usage.passages == kept_unique
 
 
 @pytest.mark.anyio

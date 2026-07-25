@@ -10,7 +10,6 @@ session inside the background agent task so streaming stays concurrent-safe.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -23,22 +22,32 @@ from supabase import AsyncClient
 
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
-from app.assistant.agent import build_document_agent_model, document_agent
-from app.assistant.deps import DocumentAgentDeps, DocumentRetriever, GroundingValidator
+from app.assistant.agent import build_document_agent_model
+from app.assistant.composer import (
+    run_citation_correction,
+    run_direct_fallback,
+    run_synthesis,
+)
+from app.assistant.deps import DocumentRetriever, GroundingValidator
 from app.assistant.evidence import EvidenceRegistry
+from app.assistant.extractor import run_fact_extractor
+from app.assistant.facts import ValidatedExtraction, validate_extraction
 from app.assistant.finalize import finalize_grounded_draft
 from app.assistant.outputs import GroundedAnswer, GroundedDraft
+from app.assistant.router import run_query_router
 from app.chat.activity_summary import group_activity_steps, merge_activity_log
-from app.chat.agent_events import agent_event_stream_handler
-from app.chat.generation import (
-    ChatGenerationConfig,
-    build_model_settings,
-)
-from app.chat.models_catalog import ResolvedChatModel
+from app.chat.generation import ChatGenerationConfig
+from app.chat.models_catalog import ResolvedChatModel, resolve_router_model
 from app.chat.messages import TurnActivityData
 from app.chat.persistence import assistant_answer_to_wire
+from app.chat.routing import fallback_query_plan, validate_query_plan
 from app.chat.turn_activity import TurnActivityEmitter
-from app.chat.turn_budget import DEFAULT_TURN_BUDGET, TurnBudget
+from app.chat.turn_budget import (
+    BROAD_TURN_BUDGET,
+    STANDARD_TURN_BUDGET,
+    TurnBudget,
+    budget_for_plan,
+)
 from app.chat.usage import TurnUsage
 from app.chat.streaming import (
     format_activity_event,
@@ -48,7 +57,7 @@ from app.chat.streaming import (
     stream_grounded_answer_events,
     stream_ui_message_text,
 )
-from app.config import ChatProvider
+from app.config import ChatProvider, settings
 from app.chat.thread_titles import DEFAULT_THREAD_TITLE, derive_thread_title
 from app.database import chats as chat_store
 from app.database.chats import AttachCitationInput
@@ -58,6 +67,8 @@ from app.grounding.repair import repair_grounded_answer
 from app.retrieval.chunk_lookup import chunk_not_found_retry
 from app.retrieval.document_retriever import SessionPerCallDocumentRetriever
 from app.retrieval.retriever import _load_neighbor_passages
+from app.retrieval.coverage import CorpusCoverage, load_corpus_coverage
+from app.retrieval.planned import retrieve_for_plan
 from app.retrieval.types import RetrievalResult, SourcePassage
 
 REFUSAL_MESSAGE = "This corpus doesn't contain enough evidence to answer that."
@@ -120,25 +131,6 @@ def model_unavailable_message(exc: BaseException, *, provider: ChatProvider) -> 
     return MODEL_UNAVAILABLE_MESSAGE
 
 
-def _token_usage_fields(run: object) -> dict[str, int | None]:
-    usage = getattr(run, "usage", None)
-    if callable(usage):
-        usage = usage()
-    if usage is None:
-        return {"input_tokens": None, "output_tokens": None}
-
-    input_tokens = getattr(usage, "input_tokens", None)
-    if input_tokens is None:
-        input_tokens = getattr(usage, "request_tokens", None)
-    output_tokens = getattr(usage, "output_tokens", None)
-    if output_tokens is None:
-        output_tokens = getattr(usage, "response_tokens", None)
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
-
-
 def _log_turn_complete(
     *,
     outcome: str,
@@ -150,8 +142,10 @@ def _log_turn_complete(
     **extra: object,
 ) -> None:
     usage_fields: dict[str, int] = {}
+    estimated_cost_usd = None
     if usage is not None:
         usage_fields = usage.as_log_fields()
+        estimated_cost_usd = usage.estimated_cost_usd(settings.chat_model_prices)
 
     logger.info(
         "chat.turn_complete",
@@ -160,6 +154,7 @@ def _log_turn_complete(
         model=model,
         latency_ms=round((time.perf_counter() - started_at) * 1000, 2),
         citation_count=citation_count,
+        estimated_cost_usd=estimated_cost_usd,
         **usage_fields,
         **extra,
     )
@@ -471,17 +466,18 @@ async def _stream_chat_turn(
                 model=chat_model.model,
             )
             try:
-                draft = await _run_citation_correction(
-                    user_text=user_text,
-                    failed_draft_answer=answer.answer,
-                    grounding_error=str(exc),
+                draft = await run_citation_correction(
+                    question=user_text,
+                    failed_answer=answer.answer,
+                    grounding_error=exc,
                     evidence=evidence,
-                    chat_model=chat_model,
+                    model=build_document_agent_model(chat_model.provider, chat_model.model),
+                    model_name=chat_model.model,
                     generation=generation,
                     usage=usage,
-                    user_id=user_id,
-                    thread_id=thread_id,
+                    max_tokens=STANDARD_TURN_BUDGET.correction_output_tokens,
                 )
+                usage.record_correction()
                 answer = finalize_grounded_draft(draft, evidence)
                 retrieved_passages = evidence.all_passages()
                 answer = _finalize_grounded_answer(
@@ -585,12 +581,14 @@ async def _run_agent(
     grounding_validator: GroundingValidator,
     activity: TurnActivityEmitter | None = None,
     retriever: DocumentRetriever | None = None,
+    coverage: CorpusCoverage | None = None,
 ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
     if activity is not None:
         activity.start_thinking(f"Thinking with {chat_model.model}...")
 
     inner = retriever if retriever is not None else SessionPerCallDocumentRetriever()
-    answer, passages, evidence, usage = await _run_agent_with_retriever(
+    resolved_coverage = coverage or await asyncio.to_thread(_load_turn_coverage)
+    answer, passages, evidence, usage = await _run_routed_turn(
         user_text,
         user_id=user_id,
         thread_id=thread_id,
@@ -598,6 +596,7 @@ async def _run_agent(
         generation=generation,
         grounding_validator=grounding_validator,
         retriever=inner,
+        coverage=resolved_coverage,
         activity=activity,
     )
     if activity is not None:
@@ -605,190 +604,116 @@ async def _run_agent(
     return answer, passages, evidence, usage
 
 
-async def _run_agent_with_retriever(
+def _load_turn_coverage() -> CorpusCoverage:
+    with session_scope() as session:
+        return load_corpus_coverage(session)
+
+
+async def _run_routed_turn(
     user_text: str,
     *,
     user_id: UUID,
     thread_id: UUID,
     chat_model: ResolvedChatModel,
     generation: ChatGenerationConfig,
-    grounding_validator: GroundingValidator,
+    grounding_validator: GroundingValidator,  # kept for parity with task brief
     retriever: DocumentRetriever,
+    coverage: CorpusCoverage,
     activity: TurnActivityEmitter | None,
 ) -> tuple[GroundedAnswer, list[SourcePassage], EvidenceRegistry, TurnUsage]:
-    recording_retriever = _RecordingRetriever(
-        inner=retriever,
-        activity=activity,
-    )
-    budget: TurnBudget = DEFAULT_TURN_BUDGET
-    evidence = EvidenceRegistry(max_passages=budget.max_unique_passages)
+    _ = (user_id, thread_id, grounding_validator)
     usage = TurnUsage()
-    deps = DocumentAgentDeps(
-        user_id=user_id,
-        thread_id=thread_id,
-        retriever=recording_retriever,
-        grounding_validator=grounding_validator,
-        evidence=evidence,
-        usage=usage,
-        budget=budget,
-    )
-    agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
-    model_settings = build_model_settings(
-        generation,
-        max_tokens=budget.extractor_output_tokens,
-    )
+    recording_retriever = _RecordingRetriever(inner=retriever, activity=activity)
 
-    async def event_handler(ctx, events):
-        if activity is None:
-            async for _event in events:
-                pass
-            return
-        await agent_event_stream_handler(
-            activity,
-            model_name=chat_model.model,
-            _ctx=ctx,
-            events=events,
-        )
+    router_model = resolve_router_model()
+    router_failed = False
+    if router_model is None:
+        plan = fallback_query_plan(user_text)
+        router_failed = True
+    else:
+        try:
+            plan = await run_query_router(
+                user_text,
+                coverage,
+                build_document_agent_model(router_model.provider, router_model.model),
+                generation,
+                usage,
+                max_tokens=STANDARD_TURN_BUDGET.router_output_tokens,
+            )
+        except (ModelHTTPError, UnexpectedModelBehavior, ValueError) as exc:
+            logger.warning(
+                "chat.router_fallback",
+                provider=router_model.provider,
+                model=router_model.model,
+                error_type=type(exc).__name__,
+            )
+            plan = fallback_query_plan(user_text)
+            router_failed = True
 
-    with document_agent.override(model=agent_model):
-        run = await document_agent.run(
+    validated = validate_query_plan(plan, coverage)
+    budget: TurnBudget = budget_for_plan(plan)
+    usage.route = plan.route
+    usage.budget_profile = "broad" if budget is BROAD_TURN_BUDGET else "standard"
+
+    retrieval = await asyncio.to_thread(
+        retrieve_for_plan,
+        recording_retriever,
+        validated,
+        budget,
+        usage,
+    )
+    usage.retrieval_expanded = retrieval.expanded
+
+    evidence = EvidenceRegistry(max_passages=budget.max_unique_passages)
+    evidence.register(retrieval.passages)
+
+    if router_failed:
+        draft = await run_direct_fallback(
             user_text,
-            deps=deps,
-            model_settings=model_settings,
-            event_stream_handler=event_handler if activity is not None else None,
+            evidence,
+            build_document_agent_model(chat_model.provider, chat_model.model),
+            generation,
+            usage,
+            max_tokens=budget.synthesis_output_tokens,
         )
-    usage.add_model_usage(
-        stage="synthesis",
-        model=chat_model.model,
-        **_token_usage_fields(run),
-    )
-    logger.info(
-        "chat.agent_complete",
-        provider=chat_model.provider,
-        model=chat_model.model,
-        retrieved_passage_count=len(recording_retriever.retrieved_passages),
-        **usage.as_log_fields(),
-    )
-    draft = run.output
+    else:
+        assert router_model is not None
+        extraction = await run_fact_extractor(
+            user_text,
+            plan,
+            evidence,
+            build_document_agent_model(router_model.provider, router_model.model),
+            generation,
+            usage,
+            max_tokens=budget.extractor_output_tokens,
+        )
+        checked = validate_extraction(extraction, evidence, route=plan.route)
+        merged_missing_scope = tuple(
+            dict.fromkeys([*retrieval.missing_scope, *checked.missing_scope])
+        )
+        merged_checked = ValidatedExtraction(
+            facts=checked.facts,
+            missing_scope=merged_missing_scope,
+            conflicts=checked.conflicts,
+            draft=checked.draft,
+            validation_errors=checked.validation_errors,
+        )
+        if plan.route == "extractive" and merged_checked.draft is not None:
+            draft = merged_checked.draft
+        else:
+            draft = await run_synthesis(
+                user_text,
+                plan,
+                merged_checked,
+                evidence,
+                build_document_agent_model(chat_model.provider, chat_model.model),
+                generation,
+                usage,
+                max_tokens=budget.synthesis_output_tokens,
+            )
+
     answer = finalize_grounded_draft(draft, evidence)
     return answer, recording_retriever.retrieved_passages, evidence, usage
-
-
-async def _run_citation_correction(
-    *,
-    user_text: str,
-    failed_draft_answer: str,
-    grounding_error: str,
-    evidence: EvidenceRegistry,
-    chat_model: ResolvedChatModel,
-    generation: ChatGenerationConfig,
-    usage: TurnUsage,
-    user_id: UUID,
-    thread_id: UUID,
-) -> GroundedDraft:
-    """Run a no-retrieval correction pass to fix citations."""
-
-    # Build a compact dump of existing evidence keyed by alias, using the
-    # already-truncated content intended for model consumption.
-    compact_rows = [row.model_dump() for row in evidence.compact_dump()]
-    evidence_json = json.dumps(compact_rows, ensure_ascii=False)
-
-    correction_prompt = (
-        f"{user_text}\n\n---\n"
-        "Your previous answer failed grounding validation.\n"
-        f"Error: {grounding_error}\n\n"
-        "Here is your previous answer:\n"
-        f"{failed_draft_answer}\n\n"
-        "Here is the evidence you may cite, keyed by alias:\n"
-        f"{evidence_json}\n\n"
-        "Rewrite the answer so that every sentence containing $, %, or numeric amounts "
-        "has an inline [n] citation marker whose record matches one of the aliases "
-        "above. Do not call tools or retrieve new documents. Only adjust wording and "
-        "citations using this fixed evidence set."
-    )
-
-    # Disable additional retrieval during correction.
-    class _DisabledRetriever:
-        def search_filings(self, query: str, *, limit: int = 10) -> RetrievalResult:
-            raise RuntimeError("retrieval disabled during correction")
-
-        def search_filings_batch(
-            self,
-            queries: list[str],
-            *,
-            limit_per_query: int = 5,
-        ) -> list[SourcePassage]:
-            raise RuntimeError("retrieval disabled during correction")
-
-        def read_chunk(self, chunk_id: UUID) -> SourcePassage:
-            raise RuntimeError("retrieval disabled during correction")
-
-        def read_surrounding_chunks(
-            self,
-            chunk_id: UUID,
-            *,
-            window: int = 1,
-        ) -> list[SourcePassage]:
-            raise RuntimeError("retrieval disabled during correction")
-
-    class _NoOpValidator:
-        def validate(
-            self,
-            answer: GroundedAnswer,
-            retrieved_passages: list[SourcePassage],
-        ) -> None:
-            return None
-
-    budget = TurnBudget(
-        max_searches=0,
-        max_reserve_searches=DEFAULT_TURN_BUDGET.max_reserve_searches,
-        max_hits_per_search=DEFAULT_TURN_BUDGET.max_hits_per_search,
-        max_unique_passages=DEFAULT_TURN_BUDGET.max_unique_passages,
-        correction_output_tokens=DEFAULT_TURN_BUDGET.correction_output_tokens,
-        max_corrections=DEFAULT_TURN_BUDGET.max_corrections,
-    )
-    deps = DocumentAgentDeps(
-        user_id=user_id,
-        thread_id=thread_id,
-        retriever=_DisabledRetriever(),
-        grounding_validator=_NoOpValidator(),
-        evidence=evidence,
-        usage=usage,
-        budget=budget,
-        correction_mode=True,
-    )
-
-    agent_model = build_document_agent_model(chat_model.provider, chat_model.model)
-    model_settings = build_model_settings(
-        generation,
-        max_tokens=budget.correction_output_tokens,
-    )
-
-    with document_agent.override(model=agent_model):
-        run = await document_agent.run(
-            correction_prompt,
-            deps=deps,
-            model_settings=model_settings,
-            event_stream_handler=None,
-        )
-
-    usage.record_correction()
-    usage.add_model_usage(
-        stage="correction",
-        model=chat_model.model,
-        **_token_usage_fields(run),
-    )
-
-    logger.info(
-        "chat.agent_complete",
-        provider=chat_model.provider,
-        model=chat_model.model,
-        retrieved_passage_count=len(evidence.all_passages()),
-        correction=True,
-        **usage.as_log_fields(),
-    )
-
-    return run.output
 
 
 async def _persist_assistant_answer(

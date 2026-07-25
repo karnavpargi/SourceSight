@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from contextlib import nullcontext
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
@@ -12,22 +10,24 @@ import pytest
 from pydantic_ai import models
 from pydantic_ai.exceptions import ModelHTTPError
 
-from app.assistant.agent import document_agent
 from app.assistant.evidence import EvidenceRegistry
-from app.assistant.outputs import Citation, GroundedAnswer, GroundedDraft
+from app.assistant.facts import ExtractedFact, FactExtraction
+from app.assistant.outputs import Citation, DraftCitation, GroundedAnswer, GroundedDraft
 from app.chat.generation import ChatGenerationConfig
 from app.chat.models_catalog import ResolvedChatModel
+from app.chat.routing import QueryPlan
 from app.chat.orchestrator import (
     REFUSAL_MESSAGE,
     model_unavailable_message,
     run_chat_turn,
-    _run_citation_correction,
+    _run_routed_turn,
 )
 from app.chat.turn_budget import DEFAULT_TURN_BUDGET
 from app.grounding.validator import GroundingError, grounding_validator
 from app.database.chats import ChatMessageRecord
 from app.chat.usage import TurnUsage
 from app.retrieval.types import RetrievalResult, SourcePassage
+from app.retrieval.coverage import CorpusCoverage
 
 models.ALLOW_MODEL_REQUESTS = False
 
@@ -65,6 +65,14 @@ class StubRetriever:
 
     def search_filings(self, query: str, *, limit: int = 10) -> RetrievalResult:
         return RetrievalResult(query=query, passages=self.passages)
+
+    def search_filings_batch(
+        self,
+        queries: list[str],
+        *,
+        limit_per_query: int = 5,
+    ) -> list[SourcePassage]:
+        return self.passages[: limit_per_query * len(queries)]
 
     def read_chunk(self, chunk_id: UUID) -> SourcePassage:
         raise NotImplementedError(chunk_id)
@@ -318,7 +326,7 @@ async def test_run_chat_turn_refuses_on_grounding_failure() -> None:
         "app.chat.orchestrator._run_agent",
         side_effect=_fake_run_agent,
     ), patch(
-        "app.chat.orchestrator._run_citation_correction",
+        "app.chat.orchestrator.run_citation_correction",
         side_effect=fake_run_correction,
     ):
         response = await run_chat_turn(
@@ -464,19 +472,8 @@ async def test_grounding_failure_uses_one_correction_without_extra_retrieval() -
 
     correction_calls: list[tuple[str, str]] = []
 
-    async def fake_run_correction(
-        *,
-        user_text: str,
-        failed_draft_answer: str,
-        grounding_error: str,
-        evidence: EvidenceRegistry,
-        chat_model: ResolvedChatModel,
-        generation: ChatGenerationConfig,
-        usage: TurnUsage,
-        user_id: UUID,
-        thread_id: UUID,
-    ) -> GroundedDraft:
-        correction_calls.append((failed_draft_answer, grounding_error))
+    async def fake_run_correction(**kwargs) -> GroundedDraft:  # type: ignore[override]
+        correction_calls.append((kwargs["failed_answer"], str(kwargs["grounding_error"])))
         return GroundedDraft(answer=corrected.answer, citations=[])
 
     with patch("app.chat.orchestrator.chat_store.append_message", new=append), patch(
@@ -495,9 +492,9 @@ async def test_grounding_failure_uses_one_correction_without_extra_retrieval() -
         "app.chat.orchestrator._finalize_grounded_answer",
         side_effect=fake_finalize_answer,
     ), patch(
-        "app.chat.orchestrator._run_citation_correction",
+        "app.chat.orchestrator.run_citation_correction",
         side_effect=fake_run_correction,
-    ):
+    ) as correction_mock:
         response = await run_chat_turn(
             client,
             user_id=USER_ID,
@@ -515,6 +512,10 @@ async def test_grounding_failure_uses_one_correction_without_extra_retrieval() -
     assert finalize_calls == 2  # initial + correction
     assert len(correction_calls) == 1
     assert run_agent_mock.await_count == 1
+    assert (
+        correction_mock.await_args.kwargs["max_tokens"]
+        == DEFAULT_TURN_BUDGET.correction_output_tokens
+    )
     attach.assert_awaited_once()
     update_message_data.assert_awaited_once()
 
@@ -576,7 +577,7 @@ async def test_grounding_correction_failure_refuses() -> None:
         "app.chat.orchestrator._finalize_grounded_answer",
         side_effect=always_fail_finalize,
     ), patch(
-        "app.chat.orchestrator._run_citation_correction",
+        "app.chat.orchestrator.run_citation_correction",
         side_effect=fake_run_correction,
     ) as correction_mock:
         response = await run_chat_turn(
@@ -652,7 +653,7 @@ async def test_run_chat_turn_does_not_retry_without_citations() -> None:
         "app.chat.orchestrator._finalize_grounded_answer",
         side_effect=fail_finalize,
     ), patch(
-        "app.chat.orchestrator._run_citation_correction",
+        "app.chat.orchestrator.run_citation_correction",
         new_callable=AsyncMock,
     ) as correction_mock:
         response = await run_chat_turn(
@@ -720,77 +721,405 @@ async def test_run_chat_turn_streams_model_unavailable_message() -> None:
     assert contents == ["How did AWS operating income change?", quota_message]
 
 
-@pytest.mark.anyio
-async def test_correction_evidence_dump_uses_truncated_content() -> None:
-    """Correction prompt should include truncated evidence content, not full passages."""
-    long_content = "x" * 2000
-    evidence = EvidenceRegistry()
-    # Register a single long passage so the registry assigns alias E1.
-    passage = _passage()
-    passage = SourcePassage(
-        chunk_id=passage.chunk_id,
-        document_id=passage.document_id,
-        chunk_index=passage.chunk_index,
-        content=long_content,
-        section=passage.section,
-        ticker=passage.ticker,
-        company_name=passage.company_name,
-        form_type=passage.form_type,
-        fiscal_year=passage.fiscal_year,
-        accession_number=passage.accession_number,
-        filing_date=passage.filing_date,
-        source_url=passage.source_url,
-        score=passage.score,
+ROUTER_MODEL = ResolvedChatModel(provider="google", model="gemini-2.0-flash-lite")
+SYNTHESIS_MODEL = ResolvedChatModel(provider="google", model="gemini-3.5-flash-lite")
+
+
+def _coverage() -> CorpusCoverage:
+    return CorpusCoverage(ticker_years={"AMZN": frozenset({2024})})
+
+
+def _extractive_plan() -> QueryPlan:
+    return QueryPlan(
+        route="extractive",
+        tickers=["AMZN"],
+        fiscal_years=[2024],
+        topics=["AWS operating income"],
+        primary_queries=["AMZN AWS operating income 2024"],
+        reserve_queries=[],
+        requires_synthesis=False,
     )
-    evidence.register([passage])
 
-    usage = TurnUsage()
-    captured_prompt = None
 
-    async def fake_run(prompt, *, deps, model_settings, event_stream_handler=None):  # type: ignore[override]
-        nonlocal captured_prompt
-        captured_prompt = prompt
+def _extractive_result_with_draft() -> FactExtraction:
+    return FactExtraction(
+        facts=[
+            ExtractedFact(
+                status="supported",
+                ticker="AMZN",
+                fiscal_year=2024,
+                topic="AWS operating income",
+                value=None,
+                unit=None,
+                finding="AWS operating income increased.",
+                evidence_alias="E1",
+            )
+        ],
+        missing_scope=[],
+        conflicts=[],
+        draft=GroundedDraft(
+            answer="AWS operating income increased [1].",
+            citations=[
+                DraftCitation(
+                    citation_index=1,
+                    evidence_alias="E1",
+                    excerpt="AWS operating income increased.",
+                )
+            ],
+        ),
+    )
 
-        class DummyRun:
-            output = GroundedDraft(answer="fixed", citations=[])
 
-        return DummyRun()
+@pytest.mark.anyio
+async def test_extractive_route_does_not_call_synthesis() -> None:
+    router = AsyncMock(return_value=_extractive_plan())
+    extractor = AsyncMock(return_value=_extractive_result_with_draft())
+    synthesis = AsyncMock()
 
     with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
         "app.chat.orchestrator.build_document_agent_model",
         return_value=object(),
     ), patch(
-        "app.chat.orchestrator.build_model_settings",
-        return_value={"max_tokens": DEFAULT_TURN_BUDGET.correction_output_tokens},
+        "app.chat.orchestrator.run_query_router",
+        new=router,
     ), patch(
-        "app.chat.orchestrator.document_agent.override",
-        side_effect=lambda *args, **kwargs: nullcontext(),
+        "app.chat.orchestrator.run_fact_extractor",
+        new=extractor,
     ), patch(
-        "app.chat.orchestrator.document_agent.run",
-        side_effect=fake_run,
-    ), patch(
-        "app.chat.orchestrator._token_usage_fields",
-        return_value={"input_tokens": 0, "output_tokens": 0},
+        "app.chat.orchestrator.run_synthesis",
+        new=synthesis,
     ):
-        await _run_citation_correction(
-            user_text="Q",
-            failed_draft_answer="A",
-            grounding_error="error",
-            evidence=evidence,
-            chat_model=TEST_CHAT_MODEL,
-            generation=TEST_GENERATION,
-            usage=usage,
+        answer, _, _, usage = await _run_routed_turn(
+            "Compare AWS operating income",
             user_id=USER_ID,
             thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[_passage()]),
+            coverage=_coverage(),
+            activity=None,
         )
 
-    assert captured_prompt is not None
-    marker = "Here is the evidence you may cite, keyed by alias:\n"
-    start = captured_prompt.index(marker) + len(marker)
-    end = captured_prompt.index("\n\nRewrite the answer", start)
-    evidence_json = captured_prompt[start:end]
-    rows = json.loads(evidence_json)
-    assert len(rows) == 1
-    assert rows[0]["alias"] == "E1"
-    assert len(rows[0]["content"]) <= 1200
+    synthesis.assert_not_awaited()
+    assert answer.answer
+    assert usage.route == "extractive"
+
+
+def _synthesis_plan(*, tickers: list[str] | None = None) -> QueryPlan:
+    return QueryPlan(
+        route="synthesis",
+        tickers=tickers or ["AMZN"],
+        fiscal_years=[2024],
+        topics=["AWS operating income"],
+        primary_queries=["AMZN AWS operating income 2024"],
+        reserve_queries=[],
+        requires_synthesis=True,
+    )
+
+
+def _boundary_plan() -> QueryPlan:
+    return QueryPlan(
+        route="boundary",
+        tickers=["AMZN"],
+        fiscal_years=[2024],
+        topics=["AWS operating income"],
+        primary_queries=["AMZN AWS operating income 2024"],
+        reserve_queries=[],
+        requires_synthesis=False,
+    )
+
+
+def _synthesis_extraction() -> FactExtraction:
+    return FactExtraction(
+        facts=[
+            ExtractedFact(
+                status="supported",
+                ticker="AMZN",
+                fiscal_year=2024,
+                topic="AWS operating income",
+                value=None,
+                unit=None,
+                finding="AWS operating income increased.",
+                evidence_alias="E1",
+            )
+        ],
+        missing_scope=[],
+        conflicts=[],
+        draft=None,
+    )
+
+
+def _draft() -> GroundedDraft:
+    return GroundedDraft(
+        answer="Answer [1].",
+        citations=[
+            DraftCitation(
+                citation_index=1,
+                evidence_alias="E1",
+                excerpt="AWS operating income increased.",
+            )
+        ],
+    )
+
+
+@pytest.mark.anyio
+async def test_synthesis_route_calls_selected_chat_model() -> None:
+    router = AsyncMock(return_value=_synthesis_plan())
+    extractor = AsyncMock(return_value=_synthesis_extraction())
+    synthesis = AsyncMock(return_value=_draft())
+    router_llm = object()
+    synthesis_llm = object()
+
+    def fake_build_model(provider: str, model: str) -> object:
+        if model == ROUTER_MODEL.model:
+            return router_llm
+        if model == SYNTHESIS_MODEL.model:
+            return synthesis_llm
+        raise AssertionError(model)
+
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        side_effect=fake_build_model,
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=router,
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=extractor,
+    ), patch(
+        "app.chat.orchestrator.run_synthesis",
+        new=synthesis,
+    ):
+        answer, _, evidence, usage = await _run_routed_turn(
+            "How did AWS operating income change?",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[_passage()]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    assert answer.answer
+    assert evidence.max_passages == 8
+    assert usage.route == "synthesis"
+    assert usage.budget_profile == "standard"
+    assert synthesis.await_args.args[4] is synthesis_llm
+    assert extractor.await_args.args[3] is router_llm
+
+
+@pytest.mark.anyio
+async def test_boundary_route_can_return_grounded_limitation() -> None:
+    router = AsyncMock(return_value=_boundary_plan())
+    extractor = AsyncMock(return_value=_synthesis_extraction())
+    synthesis = AsyncMock(return_value=_draft())
+
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=router,
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=extractor,
+    ), patch(
+        "app.chat.orchestrator.run_synthesis",
+        new=synthesis,
+    ):
+        answer, _, _, usage = await _run_routed_turn(
+            "Prove insider intent beyond filings",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[_passage()]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    assert answer.answer
+    assert usage.route == "boundary"
+
+
+@pytest.mark.anyio
+async def test_router_model_failure_uses_direct_fallback_without_extractor() -> None:
+    router = AsyncMock(
+        side_effect=ModelHTTPError(
+            status_code=429,
+            model_name=ROUTER_MODEL.model,
+            body={"error": {"code": 429}},
+        )
+    )
+    extractor = AsyncMock()
+    fallback = AsyncMock(return_value=_draft())
+
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=router,
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=extractor,
+    ), patch(
+        "app.chat.orchestrator.run_direct_fallback",
+        new=fallback,
+    ):
+        _, _, _, usage = await _run_routed_turn(
+            "How did AWS operating income change?",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[_passage()]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    extractor.assert_not_awaited()
+    fallback.assert_awaited_once()
+    assert usage.route == "synthesis"
+    assert usage.budget_profile == "standard"
+
+
+@pytest.mark.anyio
+async def test_router_model_unavailable_uses_direct_fallback_without_router_call() -> None:
+    router = AsyncMock()
+    extractor = AsyncMock()
+    fallback = AsyncMock(return_value=_draft())
+
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=None,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=router,
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=extractor,
+    ), patch(
+        "app.chat.orchestrator.run_direct_fallback",
+        new=fallback,
+    ):
+        _, _, _, usage = await _run_routed_turn(
+            "How did AWS operating income change?",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[_passage()]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    router.assert_not_awaited()
+    extractor.assert_not_awaited()
+    fallback.assert_awaited_once()
+    assert usage.route == "synthesis"
+
+
+@pytest.mark.anyio
+async def test_broad_multi_company_plan_uses_15_passage_budget() -> None:
+    router = AsyncMock(return_value=_synthesis_plan(tickers=["AMZN", "MSFT"]))
+    extractor = AsyncMock(return_value=_synthesis_extraction())
+    synthesis = AsyncMock(return_value=_draft())
+
+    passages = [_passage() for _ in range(20)]
+    with patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=router,
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=extractor,
+    ), patch(
+        "app.chat.orchestrator.run_synthesis",
+        new=synthesis,
+    ):
+        _, _, evidence, usage = await _run_routed_turn(
+            "Compare AWS and Microsoft cloud margins",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=passages),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    assert evidence.max_passages == 15
+    assert usage.budget_profile == "broad"
+
+
+@pytest.mark.anyio
+async def test_retrieval_runs_via_asyncio_to_thread() -> None:
+    router = AsyncMock(return_value=_synthesis_plan())
+    extractor = AsyncMock(return_value=_synthesis_extraction())
+    synthesis = AsyncMock(return_value=_draft())
+
+    async def fake_to_thread(fn, /, *args, **kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs == {}
+        return fn(*args)
+
+    with patch(
+        "app.chat.orchestrator.asyncio.to_thread",
+        side_effect=fake_to_thread,
+    ) as to_thread_mock, patch(
+        "app.chat.orchestrator.resolve_router_model",
+        return_value=ROUTER_MODEL,
+    ), patch(
+        "app.chat.orchestrator.build_document_agent_model",
+        return_value=object(),
+    ), patch(
+        "app.chat.orchestrator.run_query_router",
+        new=router,
+    ), patch(
+        "app.chat.orchestrator.run_fact_extractor",
+        new=extractor,
+    ), patch(
+        "app.chat.orchestrator.run_synthesis",
+        new=synthesis,
+    ):
+        await _run_routed_turn(
+            "How did AWS operating income change?",
+            user_id=USER_ID,
+            thread_id=THREAD_ID,
+            chat_model=SYNTHESIS_MODEL,
+            generation=ChatGenerationConfig(),
+            grounding_validator=grounding_validator,
+            retriever=StubRetriever(passages=[_passage()]),
+            coverage=_coverage(),
+            activity=None,
+        )
+
+    assert to_thread_mock.await_count == 1
 

@@ -16,6 +16,7 @@ class TurnUsage:
     stages: dict[str, StageUsage] = field(default_factory=dict)
     embedding_calls: int = 0
     passages: int = 0
+    retrieval_expanded: bool = False
     corrections: int = 0
     route: str | None = None
     budget_profile: str | None = None
@@ -81,6 +82,7 @@ class TurnUsage:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "passages": self.passages,
+            "retrieval_expanded": self.retrieval_expanded,
             "corrections": self.corrections,
             "stages": {
                 name: {

@@ -249,7 +249,7 @@ def _postprocess_markdown(markdown: str) -> str:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) != 2:
+    if len(sys.argv) != 2 or sys.argv[1].startswith("-"):
         raise SystemExit("Usage: uv run python -m ingest.extract <path-to-filing.htm>")
 
     output = extract_markdown_from_path(sys.argv[1])

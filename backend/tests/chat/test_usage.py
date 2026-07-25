@@ -27,6 +27,7 @@ def test_turn_usage_aggregates_across_calls() -> None:
         "input_tokens": 150,
         "output_tokens": 30,
         "passages": 5,
+        "retrieval_expanded": False,
         "corrections": 1,
         "stages": {
             "synthesis": {

@@ -5,7 +5,6 @@ from typing import Protocol
 
 from app.retrieval.types import SourcePassage
 from app.chat.turn_budget import TurnBudget
-from app.chat.turn_budget import STANDARD_TURN_BUDGET
 from app.chat.usage import TurnUsage
 from app.chat.routing import ValidatedQueryPlan
 
@@ -56,10 +55,9 @@ def retrieve_for_plan(
 ) -> PlannedRetrieval:
     plan = validated.plan
     primary = plan.primary_queries[: budget.max_searches]
-    # Request enough hits per query to allow filling unique-passage cap
     passages = retriever.search_filings_batch(
         primary,
-        limit_per_query=max(budget.max_hits_per_search, budget.max_unique_passages),
+        limit_per_query=budget.max_hits_per_search,
     )
     for _ in primary:
         usage.record_embedding()
@@ -72,7 +70,7 @@ def retrieve_for_plan(
     if expanded:
         extra = retriever.search_filings_batch(
             reserve,
-            limit_per_query=max(budget.max_hits_per_search, budget.max_unique_passages),
+            limit_per_query=budget.max_hits_per_search,
         )
         for _ in reserve:
             usage.record_embedding()

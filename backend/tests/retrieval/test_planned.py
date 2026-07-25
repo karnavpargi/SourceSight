@@ -98,5 +98,6 @@ def test_retrieve_for_plan_enforces_unique_passage_cap() -> None:
         STANDARD_TURN_BUDGET,
         TurnUsage(),
     )
-    assert len(result.passages) == 8
+    # Each query returns up to budget.max_hits_per_search (5) unique passages here
+    assert len(result.passages) == 5
 

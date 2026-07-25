@@ -651,7 +651,7 @@ async def _run_routed_turn(
             router_failed = True
 
     validated = validate_query_plan(plan, coverage)
-    budget: TurnBudget = budget_for_plan(plan)
+    budget: TurnBudget = budget_for_plan(validated.plan)
     usage.route = plan.route
     usage.budget_profile = "broad" if budget is BROAD_TURN_BUDGET else "standard"
 

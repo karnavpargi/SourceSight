@@ -657,7 +657,11 @@ async def _run_agent_with_retriever(
             model_settings=model_settings,
             event_stream_handler=event_handler if activity is not None else None,
         )
-    usage.add_model_usage(**_token_usage_fields(run))
+    usage.add_model_usage(
+        stage="synthesis",
+        model=chat_model.model,
+        **_token_usage_fields(run),
+    )
     logger.info(
         "chat.agent_complete",
         provider=chat_model.provider,
@@ -769,7 +773,11 @@ async def _run_citation_correction(
         )
 
     usage.record_correction()
-    usage.add_model_usage(**_token_usage_fields(run))
+    usage.add_model_usage(
+        stage="correction",
+        model=chat_model.model,
+        **_token_usage_fields(run),
+    )
 
     logger.info(
         "chat.agent_complete",
